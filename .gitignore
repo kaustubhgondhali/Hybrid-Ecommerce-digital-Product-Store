@@ -1,0 +1,23 @@
+# Java / Maven
+target/
+*.class
+*.log
+
+# Local tools and runtime data (uploaded images, digital product files)
+.tools/
+data/
+backend/data/
+backups/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+secrets/
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

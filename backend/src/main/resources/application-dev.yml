@@ -1,0 +1,15 @@
+spring:
+  web:
+    resources:
+      # Serve the frontend straight from ../frontend so HTML/CSS/JS edits show without a rebuild
+      static-locations: file:../frontend/,classpath:/static/
+      cache:
+        period: 0
+
+app:
+  mail:
+    log-unsent-emails: true
+
+logging:
+  level:
+    com.hybrid.platform: DEBUG

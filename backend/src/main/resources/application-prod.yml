@@ -1,0 +1,20 @@
+server:
+  servlet:
+    session:
+      cookie:
+        secure: true
+
+spring:
+  web:
+    resources:
+      cache:
+        cachecontrol:
+          max-age: 1h
+
+app:
+  mail:
+    log-unsent-emails: false
+
+logging:
+  level:
+    com.hybrid.platform: INFO

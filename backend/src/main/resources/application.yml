@@ -1,0 +1,108 @@
+spring:
+  application:
+    name: hybrid-platform
+  config:
+    # Local developer convenience: KEY=VALUE pairs from a git-ignored .env file (repo root or backend/)
+    import:
+      - optional:file:../.env[.properties]
+      - optional:file:.env[.properties]
+  profiles:
+    default: dev
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/hybrid_platform?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf8&serverTimezone=UTC}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration,classpath:db/vendor/{vendor}
+  servlet:
+    multipart:
+      max-file-size: ${MAX_UPLOAD_SIZE:512MB}
+      max-request-size: ${MAX_UPLOAD_SIZE:512MB}
+  session:
+    # Sessions live in MySQL (tables created by Flyway V2), so restarts and multiple instances keep users signed in.
+    jdbc:
+      initialize-schema: never
+      cleanup-cron: "0 */10 * * * *"
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: ${PORT:8080}
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      timeout: 2h
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${COOKIE_SECURE:false}
+  error:
+    include-message: never
+    include-stacktrace: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+  health:
+    mail:
+      enabled: false
+
+app:
+  base-url: ${APP_BASE_URL:http://localhost:8080}
+  currency: INR
+  encryption-key: ${APP_ENCRYPTION_KEY:}
+  hash-salt: ${APP_HASH_SALT:}
+  storage:
+    root: ${STORAGE_ROOT:./data/storage}
+  checkout:
+    reservation-minutes: 15
+    max-quantity-per-line: 20
+  delivery:
+    download-link-seconds: 300
+  security:
+    require-email-verification: ${REQUIRE_EMAIL_VERIFICATION:false}
+    max-failed-logins: 5
+    lock-minutes: 15
+    # Set true only for tests/overrides; normally HSTS follows COOKIE_SECURE automatically.
+    hsts-enabled: ${HSTS_ENABLED:false}
+    permissions-policy-enabled: true
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+  payment:
+    provider: ${PAYMENT_PROVIDER:demo}
+  mail:
+    log-unsent-emails: false
+  bootstrap:
+    shop-admin-email: ${BOOTSTRAP_SHOP_ADMIN_EMAIL:}
+    shop-admin-password: ${BOOTSTRAP_SHOP_ADMIN_PASSWORD:}
+    digital-admin-email: ${BOOTSTRAP_DIGITAL_ADMIN_EMAIL:}
+    digital-admin-password: ${BOOTSTRAP_DIGITAL_ADMIN_PASSWORD:}
+  # Seeds [Demo] products when their slugs are missing. Override with DEMO_CATALOG=false.
+  demo-catalog: ${DEMO_CATALOG:true}
+  # Affiliate-only mode: catalog shows partner offers; cart/checkout and direct selling are off.
+  affiliate-only: ${AFFILIATE_ONLY:true}
+
+logging:
+  level:
+    root: INFO
+    com.hybrid.platform: INFO

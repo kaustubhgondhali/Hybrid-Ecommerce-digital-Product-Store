@@ -1,0 +1,1277 @@
+/* Storefront admin panel (one per storefront: /shop/admin and /digital/admin). Every action is authorised by
+   the server; the navigation below only hides what the signed-in role cannot use. */
+(function () {
+  'use strict';
+  const { el, mount, money } = UI;
+
+  const SF = location.pathname.split('/').filter(Boolean)[0] === 'digital' ? 'digital' : 'shop';
+  const SF_NAME = SF === 'digital' ? 'Elaatech' : 'Elaashop';
+  const BRAND_LOGO = '/assets/img/' + (SF === 'digital' ? 'elaatech' : 'elaashop') + '-logo.png';
+  const BRAND_WORDMARK = '/assets/img/' + (SF === 'digital' ? 'elaatech' : 'elaashop') + '-wordmark.png';
+  const API = '/api/' + SF + '/admin';
+  const ROLES = ['MASTER_ADMIN', 'CATALOG_MANAGER', 'ORDER_MANAGER', 'SUPPORT'];
+  const GST_RATES = [0, 25, 300, 500, 1200, 1800, 2800];
+  const ORDER_STATUSES = ['PENDING_PAYMENT', 'CONFIRMED', 'PAID', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'NEEDS_ATTENTION', 'CANCELLED', 'EXPIRED', 'PARTIALLY_REFUNDED', 'REFUNDED'];
+  let me = null;
+
+  document.addEventListener('DOMContentLoaded', () => {
+    if (document.body.dataset.page === 'admin-login') loginPage();
+    else app();
+  });
+
+  const can = (perm) => me && me.permissions.includes(perm);
+  const view = () => document.getElementById('view');
+
+  function handleAuthError(e) {
+    if (e && (e.code === 'UNAUTHENTICATED' || e.code === 'SESSION_REVOKED')) {
+      location.href = '/' + SF + '/admin/login';
+      return true;
+    }
+    if (e && e.code === 'PASSWORD_CHANGE_REQUIRED') {
+      location.reload();
+      return true;
+    }
+    return false;
+  }
+
+  // ================================================================== login
+
+  async function loginPage() {
+    document.title = SF_NAME + ' admin \u2013 sign in';
+    try {
+      await Api.get(API + '/auth/me');
+      location.href = '/' + SF + '/admin';
+      return;
+    } catch (e) { /* not signed in */ }
+    const msg = el('div');
+    const totp = el('input', { name: 'totpCode', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '8' });
+    const totpField = UI.field('Authenticator code', totp, 'Enter the 6-digit code from your authenticator app.');
+    totpField.hidden = true;
+    const button = el('button', { class: 'btn block', type: 'submit', text: 'Sign in' });
+    const form = el('form', { novalidate: true }, msg,
+      UI.field('Email', el('input', { name: 'email', type: 'email', autocomplete: 'username', required: true })),
+      UI.field('Password', el('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: true })),
+      totpField, button);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      UI.busy(button, async () => {
+        mount(msg);
+        const v = UI.formValues(form);
+        try {
+          await Api.post(API + '/auth/login', { email: v.email, password: v.password, totpCode: v.totpCode || null });
+          location.href = '/' + SF + '/admin';
+        } catch (err) {
+          if (err.code === 'MFA_REQUIRED') {
+            totpField.hidden = false;
+            totp.focus();
+            mount(msg, el('div', { class: 'alert info', text: 'Enter your authenticator code to continue.' }));
+          } else {
+            mount(msg, UI.errorAlert(err));
+          }
+        }
+      });
+    });
+    mount(document.getElementById('main'), el('div', { class: 'login-wrap' },
+      el('img', { class: 'login-logo', src: BRAND_LOGO, alt: SF_NAME }),
+      el('div', { class: 'card narrow' },
+        el('h1', { text: 'Admin sign in' }),
+        el('p', { class: 'muted', text: 'Sign in with your ' + SF_NAME + ' staff account. Accounts for the other storefront do not work here.' }),
+        form)));
+  }
+
+  // ================================================================== shell
+
+  const NAV = [
+    ['dashboard', 'Dashboard', 'DASHBOARD_READ'],
+    ['products', 'Products', 'CATALOG_READ'],
+    ['categories', 'Categories', 'CATALOG_READ'],
+    ['inventory', 'Inventory', 'CATALOG_READ'],
+    ['orders', 'Orders', 'ORDERS_READ'],
+    ['entitlements', 'Digital access', 'ORDERS_READ'],
+    ['affiliate', 'Affiliate', 'AFFILIATE_READ'],
+    ['settings', 'Settings', 'SETTINGS_WRITE'],
+    ['notifications', 'Email log', 'SETTINGS_WRITE'],
+    ['staff', 'Staff', 'STAFF_MANAGE'],
+    ['audit', 'Audit log', 'AUDIT_READ'],
+    ['account', 'My account', null]
+  ];
+
+  async function app() {
+    try {
+      me = await Api.get(API + '/auth/me');
+    } catch (e) {
+      location.href = '/' + SF + '/admin/login';
+      return;
+    }
+    try {
+      const store = await Api.get(API + '/settings/store');
+      window.AdminKit.affiliateOnly = !!store.affiliateOnly;
+    } catch (e) {
+      window.AdminKit.affiliateOnly = true;
+    }
+    document.body.classList.add('admin');
+    if (me.mustChangePassword) {
+      forcedPasswordChange();
+      return;
+    }
+    const logout = el('button', { type: 'button', text: 'Sign out' });
+    logout.addEventListener('click', async () => {
+      await Api.post(API + '/auth/logout').catch(() => null);
+      location.href = '/' + SF + '/admin/login';
+    });
+    const nav = el('nav', null, NAV.filter(([, , perm]) => !perm || can(perm))
+      .map(([route, label]) => el('a', { href: '#/' + route, dataset: { route }, text: label })));
+    mount(document.getElementById('main'),
+      el('aside', { class: 'admin-sidebar no-print' },
+        el('a', { class: 'brand', href: '#/dashboard', 'aria-label': SF_NAME + ' admin dashboard' },
+          el('img', { class: 'brand-mark', src: '/assets/img/elaa-mark.png', alt: '' }),
+          el('img', { class: 'brand-word', src: BRAND_WORDMARK, alt: SF_NAME })),
+        el('div', { class: 'sf-label', text: 'Admin \u00B7 /' + SF }),
+        nav,
+        el('div', { class: 'who' }, el('div', { text: me.fullName || me.email }), el('div', { class: 'muted', text: UI.label(me.role) }),
+          el('div', { class: 'mt' }, el('a', { href: '/' + SF, target: '_blank', rel: 'noopener', text: 'View store' }), ' \u00B7 ', logout))),
+      el('div', { class: 'admin-main', id: 'view' }));
+    window.addEventListener('hashchange', route);
+    route();
+  }
+
+  function forcedPasswordChange() {
+    mount(document.getElementById('main'), el('div', { class: 'login-wrap' },
+      el('img', { class: 'login-logo', src: BRAND_LOGO, alt: SF_NAME }),
+      el('div', { class: 'card narrow' },
+      el('h1', { text: 'Choose a new password' }),
+      el('p', { class: 'muted', text: 'For security, you must replace your temporary password before continuing.' }),
+      passwordForm(() => location.reload()))));
+  }
+
+  function passwordForm(onDone) {
+    const msg = el('div');
+    const button = el('button', { class: 'btn', type: 'submit', text: 'Change password' });
+    const form = el('form', null, msg,
+      UI.field('Current password', el('input', { name: 'currentPassword', type: 'password', autocomplete: 'current-password', required: true })),
+      UI.field('New password', el('input', { name: 'newPassword', type: 'password', autocomplete: 'new-password', required: true }),
+        'At least 8 characters, including a letter and a number.'),
+      button);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      UI.busy(button, async () => {
+        try {
+          await Api.post(API + '/auth/change-password', UI.formValues(form));
+          form.reset();
+          mount(msg, el('div', { class: 'alert success', text: 'Password changed.' }));
+          if (onDone) onDone();
+        } catch (err) { mount(msg, UI.errorAlert(err)); }
+      });
+    });
+    return form;
+  }
+
+  const ROUTES = {
+    dashboard: dashboardView,
+    products: productsRoute,
+    categories: categoriesView,
+    inventory: inventoryView,
+    orders: ordersRoute,
+    entitlements: entitlementsView,
+    affiliate: affiliateView,
+    settings: settingsView,
+    notifications: notificationsView,
+    staff: staffView,
+    audit: auditView,
+    account: accountView
+  };
+
+  async function route() {
+    const parts = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
+    const name = ROUTES[parts[0]] ? parts[0] : 'dashboard';
+    document.querySelectorAll('.admin-sidebar nav a').forEach((a) => a.classList.toggle('active', a.dataset.route === name));
+    mount(view(), el('p', { class: 'muted', text: 'Loading\u2026' }));
+    try {
+      await ROUTES[name](parts.slice(1));
+    } catch (e) {
+      if (!handleAuthError(e)) mount(view(), UI.errorAlert(e));
+    }
+    window.scrollTo(0, 0);
+  }
+
+  // ------------------------------------------------------------------ helpers
+
+  function head(title, ...actions) {
+    return el('div', { class: 'page-head' }, el('h1', { text: title }), el('span', { class: 'spacer' }), actions);
+  }
+
+  function table(headers, rows, emptyText) {
+    if (!rows.length) return el('div', { class: 'empty', text: emptyText || 'Nothing here yet.' });
+    return el('div', { class: 'table-wrap' }, el('table', null,
+      el('thead', null, el('tr', null, headers.map((h) => typeof h === 'string' ? el('th', { text: h }) : h))),
+      el('tbody', null, rows)));
+  }
+
+  function pager(result, onPage) {
+    if (result.totalPages <= 1) return null;
+    const prev = el('button', { class: 'btn secondary small', type: 'button', text: 'Previous', disabled: result.page === 0 });
+    const next = el('button', { class: 'btn secondary small', type: 'button', text: 'Next', disabled: result.page + 1 >= result.totalPages });
+    prev.addEventListener('click', () => onPage(result.page - 1));
+    next.addEventListener('click', () => onPage(result.page + 1));
+    return el('div', { class: 'pager' }, prev, el('span', { class: 'muted small', text: 'Page ' + (result.page + 1) + ' of ' + result.totalPages + ' \u00B7 ' + result.totalItems + ' total' }), next);
+  }
+
+  /** Wires a form to an async submit handler with busy state and inline error/success output. */
+  function onSubmit(form, handler, successText) {
+    const msg = form.querySelector('.form-msg') || form.insertBefore(el('div', { class: 'form-msg' }), form.firstChild);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const button = form.querySelector('button[type="submit"]');
+      UI.busy(button, async () => {
+        mount(msg);
+        try {
+          const result = await handler(UI.formValues(form));
+          if (successText) mount(msg, el('div', { class: 'alert success', text: successText }));
+          return result;
+        } catch (err) {
+          if (!handleAuthError(err)) mount(msg, UI.errorAlert(err));
+        }
+      });
+    });
+    return form;
+  }
+
+  function input(name, attrs) {
+    return el('input', Object.assign({ name }, attrs || {}));
+  }
+
+  function selectEl(name, options, current, attrs) {
+    return el('select', Object.assign({ name }, attrs || {}), options.map((o) => {
+      const [value, text] = Array.isArray(o) ? o : [o, UI.label(o)];
+      return el('option', { value, text, selected: String(current == null ? '' : current) === String(value) });
+    }));
+  }
+
+  function minorOrNull(v) {
+    return v === '' || v === undefined ? null : UI.toMinor(v);
+  }
+
+  function intOrNull(v) {
+    if (v === '' || v === undefined || v === null) return null;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function stat(label, value, cls) {
+    return el('div', { class: 'stat ' + (cls || '') }, el('div', { class: 'value', text: String(value) }), el('div', { class: 'label', text: label }));
+  }
+
+  // ================================================================== dashboard
+
+  async function dashboardView() {
+    const d = await Api.get(API + '/dashboard');
+    mount(view(), head('Dashboard'),
+      el('div', { class: 'stats' },
+        stat('Revenue (30 days)', money(d.revenue30dMinor, d.currency)),
+        stat('Paid orders (30 days)', d.paidOrders30d),
+        stat('Orders today', d.ordersToday),
+        stat('Awaiting shipment', d.awaitingShipment, d.awaitingShipment ? 'warn' : ''),
+        stat('Awaiting payment', d.pendingPayment),
+        stat('Needs attention', d.needsAttention, d.needsAttention ? 'bad' : ''),
+        stat('Published products', d.publishedProducts),
+        stat('Low-stock items', d.lowStockItems, d.lowStockItems ? 'warn' : ''),
+        stat('Affiliate clicks (7 days)', d.affiliateClicks7d)),
+      el('div', { class: 'card' }, el('h2', { text: 'Recent orders' }), ordersTable(d.recentOrders)));
+  }
+
+  function ordersTable(orders) {
+    return table(['Order', 'Customer', 'Placed', 'Status', el('th', { class: 'num', text: 'Total' })], orders.map((o) => {
+      const tr = el('tr', { class: 'clickable' },
+        el('td', null, el('a', { href: '#/orders/' + o.id, text: o.orderNumber })),
+        el('td', null, el('div', { text: o.customerName }), el('div', { class: 'muted small', text: o.customerEmail })),
+        el('td', { text: UI.date(o.placedAt) }),
+        el('td', null, UI.badge(o.status), o.paymentMethod === 'COD' ? [' ', el('span', { class: 'badge purple', text: 'COD' })] : null),
+        el('td', { class: 'num', text: money(o.totalMinor, o.currency) }));
+      tr.addEventListener('click', () => { location.hash = '#/orders/' + o.id; });
+      return tr;
+    }), 'No orders yet.');
+  }
+
+  // ================================================================== products
+
+  const productFilters = { q: '', status: '', type: '', method: '', page: 0 };
+
+  function productsRoute(parts) {
+    if (parts[0] === 'new') return productNewView();
+    if (parts[0]) return productEditView(parts[0]);
+    return productListView();
+  }
+
+  async function productListView() {
+    const f = productFilters;
+    const qs = new URLSearchParams({ page: String(f.page), size: '25' });
+    ['q', 'status', 'type', 'method'].forEach((k) => { if (f[k]) qs.set(k, f[k]); });
+    const result = await Api.get(API + '/products?' + qs.toString());
+    const filters = el('form', { class: 'filters' },
+      input('q', { type: 'search', placeholder: 'Search title or SKU', value: f.q }),
+      selectEl('status', [['', 'Any status'], 'DRAFT', 'PUBLISHED', 'ARCHIVED'], f.status),
+      selectEl('type', [['', 'Any type'], 'PHYSICAL', 'DIGITAL'], f.type),
+      selectEl('method', [['', 'Any method'], 'DIRECT', 'AFFILIATE'], f.method),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Filter' }));
+    filters.addEventListener('submit', (e) => {
+      e.preventDefault();
+      Object.assign(productFilters, UI.formValues(filters), { page: 0 });
+      productListView().catch((err) => mount(view(), UI.errorAlert(err)));
+    });
+    const rows = result.items.map((p) => {
+      const tr = el('tr', { class: 'clickable' },
+        el('td', null, p.imageUrl ? el('img', { class: 'thumb-sm', src: p.imageUrl, alt: '' }) : el('div', { class: 'thumb-sm' })),
+        el('td', null, el('a', { href: '#/products/' + p.id, text: p.title }), el('div', { class: 'muted small', text: p.slug })),
+        el('td', null, el('span', { class: 'badge', text: UI.label(p.productType) }), ' ',
+          el('span', { class: 'badge ' + (p.sellingMethod === 'AFFILIATE' ? 'purple' : 'blue'), text: UI.label(p.sellingMethod) })),
+        el('td', null, UI.badge(p.status)),
+        el('td', { class: 'num', text: p.priceMinor != null ? money(p.priceMinor) : '\u2014' }),
+        el('td', { class: 'muted small', text: UI.date(p.updatedAt) }));
+      tr.addEventListener('click', (e) => { if (e.target.tagName !== 'A') location.hash = '#/products/' + p.id; });
+      return tr;
+    });
+    mount(view(), head('Products', can('CATALOG_WRITE') ? el('a', { class: 'btn', href: '#/products/new', text: 'New product' }) : null),
+      filters,
+      el('div', { class: 'card' }, table(['', 'Product', 'Type', 'Status', el('th', { class: 'num', text: 'Price' }), 'Updated'], rows, 'No products match.'),
+        pager(result, (page) => { productFilters.page = page; productListView(); })));
+  }
+
+  async function productNewView() {
+    const categories = await Api.get(API + '/categories');
+    const type = selectEl('productType', [['PHYSICAL', 'Physical product'], ['DIGITAL', 'Digital product']], SF === 'digital' ? 'DIGITAL' : 'PHYSICAL');
+    const affiliateOnly = !!(window.AdminKit && window.AdminKit.affiliateOnly);
+    const method = selectEl('sellingMethod',
+      affiliateOnly
+        ? [['AFFILIATE', 'Affiliate (redirect to partner store)']]
+        : [['AFFILIATE', 'Affiliate (redirect to partner store)'], ['DIRECT', 'Sold directly (we take payment)']],
+      'AFFILIATE');
+    const priceRow = el('div', { class: 'row' },
+      UI.field('Price (\u20B9)', input('price', { inputmode: 'decimal', placeholder: '499.00' })),
+      UI.field('Compare-at price (\u20B9, optional)', input('compareAt', { inputmode: 'decimal' })));
+    const physicalRow = el('div', { class: 'row' },
+      UI.field('SKU', input('sku', { maxlength: '80', placeholder: 'MUG-BLUE-01' })),
+      UI.field('Weight (grams)', input('weightGrams', { type: 'number', min: '1' })));
+    const digitalRow = el('div', { class: 'row' },
+      UI.field('Delivery', selectEl('deliveryKind', [['DOWNLOAD', 'File download'], ['LICENSE_KEY', 'License key'], ['DOWNLOAD_AND_LICENSE', 'Download + license key']], 'DOWNLOAD')),
+      UI.field('Format (optional)', input('digitalFormat', { maxlength: '60', placeholder: 'PDF, ZIP, Windows installer\u2026' })));
+    const sync = () => {
+      const direct = method.value === 'DIRECT';
+      priceRow.hidden = !direct;
+      physicalRow.hidden = !(direct && type.value === 'PHYSICAL');
+      digitalRow.hidden = !(type.value === 'DIGITAL' && direct);
+    };
+    type.addEventListener('change', sync);
+    method.addEventListener('change', sync);
+    sync();
+    const form = el('form', { class: 'card medium' },
+      el('div', { class: 'row' }, UI.field('Product type', type), UI.field('Selling method', method)),
+      UI.field('Title', input('title', { required: true, maxlength: '200' })),
+      UI.field('Short summary (optional)', input('summary', { maxlength: '500' })),
+      el('div', { class: 'row' },
+        UI.field('Category', selectEl('categoryId', [['', 'None'], ...categories.map((c) => [String(c.id), c.name])], '')),
+        UI.field('Brand (optional)', input('brand', { maxlength: '120' }))),
+      priceRow, physicalRow, digitalRow,
+      el('p', { class: 'muted small', text: affiliateOnly
+        ? 'Created as a draft affiliate offer. Add images and the partner link next, then publish. Shoppers will leave this site to buy.'
+        : 'The product is created as a draft. Add images, stock, files or the affiliate link next, then publish.' }),
+      el('div', { class: 'actions' }, el('button', { class: 'btn', type: 'submit', text: 'Create draft' }), el('a', { href: '#/products', text: 'Cancel' })));
+    onSubmit(form, async (v) => {
+      const direct = v.sellingMethod === 'DIRECT';
+      const body = {
+        productType: v.productType, sellingMethod: v.sellingMethod, title: v.title, summary: v.summary || null,
+        brand: v.brand || null, categoryId: v.categoryId ? Number(v.categoryId) : null,
+        priceMinor: direct ? minorOrNull(v.price) : null, compareAtMinor: direct ? minorOrNull(v.compareAt) : null,
+        sku: direct && v.productType === 'PHYSICAL' ? (v.sku || null) : null,
+        weightGrams: direct && v.productType === 'PHYSICAL' ? intOrNull(v.weightGrams) : null,
+        deliveryKind: v.productType === 'DIGITAL' ? v.deliveryKind : null,
+        digitalFormat: v.productType === 'DIGITAL' ? (v.digitalFormat || null) : null
+      };
+      const p = await Api.post(API + '/products', body);
+      location.hash = '#/products/' + p.id;
+    });
+    mount(view(), head('New product'), form);
+  }
+
+  async function productEditView(id) {
+    const [p, categories] = await Promise.all([Api.get(API + '/products/' + id), Api.get(API + '/categories')]);
+    const writable = can('CATALOG_WRITE');
+    const refresh = () => productEditView(id).catch((e) => mount(view(), UI.errorAlert(e)));
+
+    // status actions
+    const statusMsg = el('div');
+    const statusBtn = (label, status, cls) => {
+      const b = el('button', { class: 'btn ' + (cls || ''), type: 'button', text: label });
+      b.addEventListener('click', () => UI.busy(b, async () => {
+        try {
+          await Api.post(API + '/products/' + id + '/status', { status });
+          UI.toast('Product ' + UI.label(status).toLowerCase(), 'success');
+          refresh();
+        } catch (e) { if (!handleAuthError(e)) mount(statusMsg, UI.errorAlert(e)); }
+      }));
+      return b;
+    };
+    const actions = writable ? [
+      p.status !== 'PUBLISHED' ? statusBtn('Publish', 'PUBLISHED') : statusBtn('Unpublish', 'DRAFT', 'secondary'),
+      p.status !== 'ARCHIVED' ? statusBtn('Archive', 'ARCHIVED', 'secondary') : null
+    ] : [];
+
+    const header = el('div', null,
+      el('p', { class: 'small' }, el('a', { href: '#/products', text: '\u2190 Products' })),
+      head(p.title, p.status === 'PUBLISHED' ? el('a', { class: 'btn ghost', href: '/' + SF + '/p/' + encodeURIComponent(p.slug), target: '_blank', rel: 'noopener', text: 'View in store' }) : null, actions),
+      el('div', { class: 'actions mb' }, UI.badge(p.status), el('span', { class: 'badge', text: UI.label(p.productType) }),
+        el('span', { class: 'badge ' + (p.sellingMethod === 'AFFILIATE' ? 'purple' : 'blue'), text: UI.label(p.sellingMethod) }),
+        p.typeLocked ? el('span', { class: 'muted small', text: 'Type and selling method are locked (product has orders or an affiliate link).' }) : null),
+      statusMsg,
+      p.publishProblems && p.publishProblems.length && p.status !== 'PUBLISHED'
+        ? el('div', { class: 'alert warning' }, 'Before publishing:', el('ul', null, p.publishProblems.map((x) => el('li', { text: x }))))
+        : null);
+
+    // details
+    const details = el('form', { class: 'card' },
+      el('h2', { text: 'Details' }),
+      el('div', { class: 'row' },
+        UI.field('Product type', selectEl('productType', ['PHYSICAL', 'DIGITAL'], p.productType, { disabled: p.typeLocked || !writable })),
+        UI.field('Selling method', selectEl('sellingMethod',
+          window.AdminKit.affiliateOnly ? ['AFFILIATE'] : ['AFFILIATE', 'DIRECT'],
+          p.sellingMethod, { disabled: p.typeLocked || !writable || window.AdminKit.affiliateOnly }))),
+      UI.field('Title', input('title', { value: p.title, required: true, maxlength: '200' })),
+      UI.field('URL slug', input('slug', { value: p.slug, maxlength: '160' }), '/' + SF + '/p/' + p.slug),
+      UI.field('Short summary', input('summary', { value: p.summary || '', maxlength: '500' })),
+      UI.field('Description', el('textarea', { name: 'description', maxlength: '20000', text: p.description || '' })),
+      el('div', { class: 'row' },
+        UI.field('Category', selectEl('categoryId', [['0', 'None'], ...categories.map((c) => [String(c.id), c.name])], p.categoryId ? String(p.categoryId) : '0')),
+        UI.field('Brand', input('brand', { value: p.brand || '', maxlength: '120' }))),
+      p.productType === 'DIGITAL' ? el('div', { class: 'row' },
+        UI.field('Delivery', selectEl('deliveryKind', [['DOWNLOAD', 'File download'], ['LICENSE_KEY', 'License key'], ['DOWNLOAD_AND_LICENSE', 'Download + license key']], p.deliveryKind || 'DOWNLOAD')),
+        UI.field('Format', input('digitalFormat', { value: p.digitalFormat || '', maxlength: '60' }))) : null,
+      p.sellingMethod === 'DIRECT' ? el('div', { class: 'row' },
+        UI.field('HSN / SAC code', input('hsnSac', { value: p.hsnSac || '', maxlength: '8', inputmode: 'numeric', placeholder: 'Store default' }),
+          'Printed on GST invoices. Leave empty to use the store default.'),
+        UI.field('GST rate', selectEl('gstRateBps', [['', 'Not set (0%)'], ...GST_RATES.map((r) => [String(r), r / 100 + '%'])],
+          p.gstRateBps == null ? '' : String(p.gstRateBps)))) : null,
+      el('p', { class: 'muted small' }, 'Search titles, descriptions and keywords are edited in the ',
+        el('a', { href: '#/seo/products/' + p.id, text: 'SEO tool' }), '.'),
+      writable ? el('button', { class: 'btn', type: 'submit', text: 'Save details' }) : null);
+    onSubmit(details, async (v) => {
+      await Api.put(API + '/products/' + id, {
+        productType: v.productType || null, sellingMethod: v.sellingMethod || null, title: v.title, slug: v.slug,
+        summary: v.summary, description: v.description, brand: v.brand, categoryId: Number(v.categoryId || 0),
+        deliveryKind: v.deliveryKind || null, digitalFormat: v.digitalFormat === undefined ? null : v.digitalFormat,
+        hsnSac: v.hsnSac === undefined ? null : v.hsnSac,
+        gstRateBps: v.gstRateBps === undefined ? null : (v.gstRateBps === '' ? -1 : intOrNull(v.gstRateBps)),
+        version: p.version
+      });
+      UI.toast('Saved', 'success');
+      refresh();
+    });
+
+    const sections = [header, details];
+    if (p.sellingMethod === 'DIRECT') sections.push(variantsSection(p, writable, refresh));
+    sections.push(imagesSection(p, writable, refresh));
+    if (p.sellingMethod === 'AFFILIATE') sections.push(affiliateSection(p, refresh));
+    if (p.productType === 'DIGITAL' && p.sellingMethod === 'DIRECT') sections.push(await deliverySection(p, refresh));
+    mount(view(), sections);
+  }
+
+  function variantsSection(p, writable, refresh) {
+    const physical = p.productType === 'PHYSICAL';
+    const rows = p.variants.map((v) => {
+      const name = input('name', { value: v.name, maxlength: '120' });
+      const sku = input('sku', { value: v.sku || '', maxlength: '80' });
+      const price = input('price', { value: UI.fromMinor(v.priceMinor), class: 'num-input', inputmode: 'decimal' });
+      const compare = input('compareAt', { value: UI.fromMinor(v.compareAtMinor), class: 'num-input', inputmode: 'decimal' });
+      const weight = input('weightGrams', { value: v.weightGrams == null ? '' : String(v.weightGrams), type: 'number', class: 'num-input' });
+      const active = input('active', { type: 'checkbox', checked: v.active });
+      const save = el('button', { class: 'btn small', type: 'button', text: 'Save' });
+      save.addEventListener('click', () => UI.busy(save, async () => {
+        try {
+          await Api.put(API + '/products/' + p.id + '/variants/' + v.id, {
+            name: name.value.trim(), sku: physical ? (sku.value.trim() || null) : null, priceMinor: minorOrNull(price.value.trim()),
+            compareAtMinor: compare.value.trim() === '' ? 0 : UI.toMinor(compare.value.trim()),
+            weightGrams: physical ? intOrNull(weight.value) : null, active: active.checked
+          });
+          UI.toast('Variant saved', 'success');
+          refresh();
+        } catch (e) { if (!handleAuthError(e)) UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      return el('tr', null, el('td', null, name), physical ? el('td', null, sku) : null, el('td', null, price), el('td', null, compare),
+        physical ? el('td', null, weight) : null, el('td', null, active),
+        physical ? el('td', { class: 'num', text: v.available == null ? '\u2014' : String(v.available) }) : null,
+        el('td', null, writable ? save : null));
+    });
+    const headers = ['Name', physical ? 'SKU' : null, 'Price (\u20B9)', 'Compare-at (\u20B9)', physical ? 'Weight (g)' : null, 'Active',
+      physical ? el('th', { class: 'num', text: 'In stock' }) : null, ''].filter((h) => h !== null);
+
+    const add = el('form', { class: 'inline-form mt' },
+      UI.field('New option name', input('name', { required: true, maxlength: '120', placeholder: 'Large / Blue' })),
+      physical ? UI.field('SKU', input('sku', { maxlength: '80' })) : null,
+      UI.field('Price (\u20B9)', input('price', { inputmode: 'decimal' })),
+      physical ? UI.field('Weight (g)', input('weightGrams', { type: 'number', min: '1' })) : null,
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Add option' }));
+    onSubmit(add, async (v) => {
+      await Api.post(API + '/products/' + p.id + '/variants', {
+        name: v.name, sku: physical ? (v.sku || null) : null, priceMinor: minorOrNull(v.price),
+        weightGrams: physical ? intOrNull(v.weightGrams) : null, active: true
+      });
+      refresh();
+    });
+    return el('div', { class: 'card' }, el('h2', { text: 'Pricing & options' }),
+      physical ? el('p', { class: 'muted small' }, 'Stock levels are managed on the ', el('a', { href: '#/inventory', text: 'Inventory' }), ' page.') : null,
+      table(headers, rows), writable ? add : null);
+  }
+
+  function imagesSection(p, writable, refresh) {
+    const list = el('div', { class: 'image-list' }, p.images.map((img) => {
+      const del = el('button', { class: 'btn ghost small', type: 'button', text: 'Remove' });
+      del.addEventListener('click', () => UI.busy(del, async () => {
+        if (!confirm('Remove this image?')) return;
+        try { await Api.del(API + '/products/' + p.id + '/images/' + img.id); refresh(); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      const alt = input('alt', { value: img.alt || '', maxlength: '250', placeholder: 'Describe the image', 'aria-label': 'Alt text', disabled: !writable });
+      alt.addEventListener('change', async () => {
+        try {
+          await Api.patch(API + '/products/' + p.id + '/images/' + img.id, { alt: alt.value.trim() });
+          UI.toast('Alt text saved', 'success');
+        } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      });
+      return el('figure', null, el('img', { src: img.thumbUrl || img.url, alt: img.alt || '' }),
+        el('figcaption', null, alt, writable ? del : null));
+    }));
+    const form = el('form', { class: 'inline-form' },
+      UI.field('Image (JPEG, PNG, WebP or GIF, max 5 MB)', input('file', { type: 'file', accept: 'image/jpeg,image/png,image/webp,image/gif', required: true })),
+      UI.field('Alt text', input('alt', { maxlength: '200', class: 'wide' })),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Upload' }));
+    onSubmit(form, async () => {
+      const fd = new FormData(form);
+      if (!fd.get('file') || !fd.get('file').size) throw new Error('Choose an image file');
+      await Api.upload(API + '/products/' + p.id + '/images', fd);
+      refresh();
+    });
+    return el('div', { class: 'card' }, el('h2', { text: 'Images' }),
+      p.images.length ? list : el('p', { class: 'muted', text: 'No images yet. At least one image is required to publish.' }),
+      writable ? form : null);
+  }
+
+  function affiliateSection(p, refresh) {
+    const link = p.affiliateLink;
+    const writable = can('AFFILIATE_WRITE');
+    const form = el('form', null,
+      UI.field('Affiliate URL', input('url', { value: link ? link.destinationUrl : '', required: true, maxlength: '2048', placeholder: 'https://www.partner.com/product?tag=yourid' }),
+        'Paste the exact link from your affiliate program (Amazon, Flipkart, Impact, CJ, ShareASale, any network). It is stored and redirected unchanged.'),
+      el('div', { class: 'row' },
+        UI.field('Merchant name (optional)', input('merchantName', { value: link ? link.merchantName : '', maxlength: '120' })),
+        UI.field('Display price (\u20B9, optional)', input('displayPrice', { value: link ? UI.fromMinor(link.displayPriceMinor) : '', inputmode: 'decimal' }))),
+      UI.field('Disclosure', el('textarea', { name: 'disclosure', maxlength: '500', text: link ? link.disclosure || '' : '' }),
+        'Shown next to the buy button. Leave empty for the standard disclosure.'),
+      writable ? el('button', { class: 'btn', type: 'submit', text: link ? 'Update link' : 'Save link' }) : null);
+    onSubmit(form, async (v) => {
+      const body = { url: v.url, merchantName: v.merchantName || null, displayPriceMinor: minorOrNull(v.displayPrice), disclosure: v.disclosure || null, confirmNewDomain: false };
+      try {
+        await Api.put(API + '/products/' + p.id + '/affiliate-link', body);
+      } catch (e) {
+        if (e.code !== 'AFFILIATE_DOMAIN_UNCONFIRMED') throw e;
+        if (!confirm(e.message + '\n\nAllow redirects to ' + (e.data.domain || 'this domain') + '?')) return;
+        body.confirmNewDomain = true;
+        await Api.put(API + '/products/' + p.id + '/affiliate-link', body);
+      }
+      UI.toast('Affiliate link saved', 'success');
+      refresh();
+    });
+    return el('div', { class: 'card' }, el('h2', { text: 'Affiliate link' }),
+      link ? el('dl', { class: 'kv mb' },
+        el('dt', { text: 'Tracking URL' }), el('dd', null, el('a', { href: link.goUrl, target: '_blank', rel: 'noopener', text: location.origin + link.goUrl })),
+        el('dt', { text: 'Merchant' }), el('dd', { text: link.merchantName + ' (' + link.merchantDomain + ')' }),
+        el('dt', { text: 'Clicks (30 days)' }), el('dd', { text: String(link.clicks30d) }),
+        el('dt', { text: 'Status' }), el('dd', null, UI.badge(link.active ? 'ACTIVE' : 'DISABLED'))) : null,
+      form);
+  }
+
+  async function deliverySection(p, refresh) {
+    const d = await Api.get(API + '/products/' + p.id + '/delivery');
+    const writable = can('DIGITAL_WRITE');
+    const policy = el('form', { class: 'inline-form mb' },
+      UI.field('Download limit per purchase', input('downloadLimit', { type: 'number', min: '0', value: d.downloadLimit == null ? '' : String(d.downloadLimit), placeholder: 'Unlimited' })),
+      UI.field('Access period (days)', input('accessDays', { type: 'number', min: '0', value: d.accessDays == null ? '' : String(d.accessDays), placeholder: 'Forever' })),
+      writable ? el('button', { class: 'btn secondary', type: 'submit', text: 'Save policy' }) : null);
+    onSubmit(policy, async (v) => {
+      await Api.put(API + '/products/' + p.id + '/delivery', { downloadLimit: intOrNull(v.downloadLimit), accessDays: intOrNull(v.accessDays) });
+    }, 'Delivery policy saved.');
+
+    const assets = table(['File', 'Version', 'Size', 'Status', 'Uploaded', ''], d.assets.map((a) => {
+      const retire = el('button', { class: 'btn ghost small', type: 'button', text: 'Retire' });
+      retire.addEventListener('click', () => UI.busy(retire, async () => {
+        if (!confirm('Retire this file? Customers will no longer be able to download it.')) return;
+        try { await Api.del(API + '/assets/' + a.id); refresh(); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      return el('tr', null, el('td', { text: a.fileName }), el('td', { text: a.versionLabel || '' }),
+        el('td', { text: (a.sizeBytes / 1024 / 1024).toFixed(2) + ' MB' }), el('td', null, UI.badge(a.status)),
+        el('td', { class: 'small', text: UI.date(a.createdAt) }), el('td', null, writable && a.status === 'READY' ? retire : null));
+    }), 'No files uploaded.');
+
+    const upload = el('form', { class: 'inline-form mt' },
+      UI.field('Upload file', input('file', { type: 'file', required: true })),
+      UI.field('Version label (optional)', input('versionLabel', { maxlength: '40' })),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Upload' }));
+    onSubmit(upload, async () => {
+      const fd = new FormData(upload);
+      if (!fd.get('file') || !fd.get('file').size) throw new Error('Choose a file');
+      await Api.upload(API + '/products/' + p.id + '/assets', fd);
+      refresh();
+    });
+
+    const keys = el('form', { class: 'mt' },
+      UI.field('Import license keys (one per line)', el('textarea', { name: 'keys', placeholder: 'XXXX-XXXX-XXXX-XXXX' })),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Import keys' }));
+    onSubmit(keys, async (v) => {
+      const r = await Api.post(API + '/products/' + p.id + '/license-keys', { keys: v.keys });
+      UI.toast('Imported ' + r.imported + ', duplicates ' + r.duplicates + ', rejected ' + r.rejected, 'success');
+      refresh();
+    });
+
+    return el('div', { class: 'card' }, el('h2', { text: 'Digital delivery' }),
+      el('p', { class: 'muted', text: 'Files are stored privately and only served to customers who bought the product, through short-lived download links. Available license keys: ' + d.availableLicenseKeys + '.' }),
+      policy, el('h3', { text: 'Files' }), assets, writable ? upload : null, writable ? keys : null);
+  }
+
+  // ================================================================== categories
+
+  async function categoriesView() {
+    const cats = await Api.get(API + '/categories');
+    const writable = can('CATALOG_WRITE');
+    const rows = cats.map((c) => {
+      const name = input('name', { value: c.name, maxlength: '120' });
+      const slug = input('slug', { value: c.slug, maxlength: '140' });
+      const order = input('sortOrder', { type: 'number', value: String(c.sortOrder), class: 'num-input' });
+      const active = input('active', { type: 'checkbox', checked: c.active });
+      const save = el('button', { class: 'btn small', type: 'button', text: 'Save' });
+      const del = el('button', { class: 'btn ghost small', type: 'button', text: 'Delete' });
+      const more = el('button', { class: 'btn ghost small', type: 'button', text: 'Page & SEO' });
+      const description = el('textarea', { name: 'description', rows: '3', maxlength: '5000', disabled: !writable });
+      description.value = c.description || '';
+      const metaTitle = input('metaTitle', { value: c.metaTitle || '', maxlength: '200', class: 'wide', disabled: !writable });
+      const metaDescription = el('textarea', { name: 'metaDescription', rows: '2', maxlength: '320', disabled: !writable });
+      metaDescription.value = c.metaDescription || '';
+      const extra = el('tr', { class: 'sub-row', hidden: true }, el('td', { colspan: '5' },
+        el('div', { class: 'row' },
+          UI.field('Intro text shown on the category page', description, 'Supports # headings, - bullets and [links](https://\u2026).'),
+          el('div', null,
+            UI.field('Search title', metaTitle, 'Leave empty to use "' + c.name + ' | store name".'),
+            UI.field('Search description', metaDescription, 'About 150 characters.')))));
+      more.addEventListener('click', () => { extra.hidden = !extra.hidden; });
+      save.addEventListener('click', () => UI.busy(save, async () => {
+        try {
+          await Api.put(API + '/categories/' + c.id, { name: name.value.trim(), slug: slug.value.trim(), sortOrder: intOrNull(order.value),
+            active: active.checked, description: description.value.trim(), metaTitle: metaTitle.value.trim(), metaDescription: metaDescription.value.trim() });
+          UI.toast('Category saved', 'success');
+        } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      del.addEventListener('click', () => UI.busy(del, async () => {
+        if (!confirm('Delete category "' + c.name + '"?')) return;
+        try { await Api.del(API + '/categories/' + c.id); categoriesView(); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      return [el('tr', null, el('td', null, name), el('td', null, slug), el('td', null, order), el('td', null, active),
+        el('td', null, el('div', { class: 'actions' }, more, writable ? [save, del] : null))), extra];
+    });
+    const add = el('form', { class: 'inline-form' },
+      UI.field('Name', input('name', { required: true, maxlength: '120' })),
+      UI.field('Slug (optional)', input('slug', { maxlength: '140' })),
+      el('button', { class: 'btn', type: 'submit', text: 'Add category' }));
+    onSubmit(add, async (v) => {
+      await Api.post(API + '/categories', { name: v.name, slug: v.slug || null, active: true });
+      categoriesView();
+    });
+    mount(view(), head('Categories'), writable ? el('div', { class: 'card' }, add) : null,
+      el('div', { class: 'card' }, table(['Name', 'Slug', 'Order', 'Active', ''], rows, 'No categories yet.')));
+  }
+
+  // ================================================================== inventory
+
+  async function inventoryView() {
+    const items = await Api.get(API + '/inventory');
+    const writable = can('INVENTORY_WRITE');
+    const tbody = [];
+    items.forEach((s) => {
+      const adjustRow = el('tr', { class: 'editing', hidden: true });
+      const tr = el('tr', null,
+        el('td', null, el('a', { href: '#/products/' + s.productId, text: s.productTitle }), s.variantName !== 'Default' ? el('div', { class: 'muted small', text: s.variantName }) : null),
+        el('td', { text: s.sku || '' }),
+        el('td', { class: 'num', text: String(s.onHand) }),
+        el('td', { class: 'num', text: String(s.reserved) }),
+        el('td', { class: 'num' }, el('strong', { text: String(s.available) })),
+        el('td', { class: 'num', text: String(s.lowStockThreshold) }),
+        el('td', null, s.low ? el('span', { class: 'badge amber', text: 'Low' }) : null),
+        el('td', null, writable ? toggleButton('Adjust', adjustRow, () => adjustForm(s)) : null, ' ', toggleButton('History', adjustRow, () => historyPanel(s))));
+      tbody.push(tr, adjustRow);
+    });
+    mount(view(), head('Inventory'),
+      el('p', { class: 'muted', text: 'Available = on hand \u2212 reserved. Stock is reserved when a customer places an order and released if payment does not arrive in time.' }),
+      el('div', { class: 'card' }, table(['Product', 'SKU', el('th', { class: 'num', text: 'On hand' }), el('th', { class: 'num', text: 'Reserved' }),
+        el('th', { class: 'num', text: 'Available' }), el('th', { class: 'num', text: 'Low at' }), '', ''], tbody, 'No physical products yet.')));
+  }
+
+  function toggleButton(label, row, render) {
+    const b = el('button', { class: 'btn ghost small', type: 'button', text: label });
+    b.addEventListener('click', async () => {
+      if (!row.hidden && row.dataset.panel === label) { row.hidden = true; return; }
+      row.dataset.panel = label;
+      mount(row, el('td', { colspan: '8' }, await render()));
+      row.hidden = false;
+    });
+    return b;
+  }
+
+  function adjustForm(s) {
+    const form = el('form', { class: 'inline-form' },
+      UI.field('Change (+/\u2212 units)', input('delta', { type: 'number', required: true, placeholder: '+10 or -2' })),
+      UI.field('Reason', selectEl('reason', [['RECEIPT', 'Stock received'], ['ADJUSTMENT', 'Adjustment'], ['DAMAGE', 'Damaged / lost'], ['CORRECTION', 'Count correction']], 'RECEIPT')),
+      UI.field('Note', input('note', { maxlength: '300', class: 'wide' })),
+      UI.field('Low-stock alert at', input('lowStockThreshold', { type: 'number', min: '0', value: String(s.lowStockThreshold) })),
+      el('button', { class: 'btn', type: 'submit', text: 'Apply' }));
+    onSubmit(form, async (v) => {
+      await Api.post(API + '/inventory/' + s.variantId + '/adjust', {
+        delta: intOrNull(v.delta) || 0, reason: v.reason, note: v.note || null, lowStockThreshold: intOrNull(v.lowStockThreshold)
+      });
+      UI.toast('Stock updated', 'success');
+      inventoryView();
+    });
+    return form;
+  }
+
+  async function historyPanel(s) {
+    const moves = await Api.get(API + '/inventory/' + s.variantId + '/movements');
+    return table(['When', 'Change', 'Reason', 'Order', 'Note'], moves.map((m) => el('tr', null,
+      el('td', { class: 'small', text: UI.date(m.createdAt) }), el('td', { text: (m.delta > 0 ? '+' : '') + m.delta }),
+      el('td', { text: UI.label(m.reason) }), el('td', { text: m.orderId ? '#' + m.orderId : '' }), el('td', { text: m.note || '' }))), 'No stock movements yet.');
+  }
+
+  // ================================================================== orders
+
+  const orderFilters = { status: '', q: '', page: 0 };
+
+  function ordersRoute(parts) {
+    if (parts[0] && parts[1] === 'invoice') return orderInvoiceView(parts[0]);
+    if (parts[0]) return orderDetailView(parts[0]);
+    return orderListView();
+  }
+
+  async function orderListView() {
+    const f = orderFilters;
+    const qs = new URLSearchParams({ page: String(f.page), size: '25' });
+    if (f.status) qs.set('status', f.status);
+    if (f.q) qs.set('q', f.q);
+    const result = await Api.get(API + '/orders?' + qs.toString());
+    const filters = el('form', { class: 'filters' },
+      input('q', { type: 'search', placeholder: 'Order number, email or name', value: f.q }),
+      selectEl('status', [['', 'Any status'], ...ORDER_STATUSES], f.status),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Filter' }));
+    filters.addEventListener('submit', (e) => {
+      e.preventDefault();
+      Object.assign(orderFilters, UI.formValues(filters), { page: 0 });
+      orderListView();
+    });
+    mount(view(), head('Orders'), filters,
+      el('div', { class: 'card' }, ordersTable(result.items), pager(result, (page) => { orderFilters.page = page; orderListView(); })));
+  }
+
+  async function orderDetailView(id) {
+    const d = await Api.get(API + '/orders/' + id);
+    const o = d.order;
+    const a = o.shippingAddress;
+    const refresh = () => orderDetailView(id).catch((e) => mount(view(), UI.errorAlert(e)));
+    const writable = can('ORDERS_WRITE');
+
+    const lines = table(['Item', 'SKU', 'Type', 'Status', el('th', { class: 'num', text: 'Qty' }), el('th', { class: 'num', text: 'Unit' }), el('th', { class: 'num', text: 'Total' })],
+      o.lines.map((l) => el('tr', null,
+        el('td', null, el('a', { href: '#/products/' + l.productId, text: l.title }), l.variantName !== 'Default' ? el('div', { class: 'muted small', text: l.variantName }) : null),
+        el('td', { text: l.sku || '' }), el('td', { text: UI.label(l.productType) }), el('td', null, UI.badge(l.fulfillmentStatus)),
+        el('td', { class: 'num', text: String(l.quantity) }), el('td', { class: 'num', text: money(l.unitPriceMinor, o.currency) }),
+        el('td', { class: 'num', text: money(l.lineTotalMinor, o.currency) }))));
+
+    const summary = el('div', { class: 'card' }, el('h3', { text: 'Totals' }),
+      kvRow('Subtotal', money(o.subtotalMinor, o.currency)),
+      o.discountMinor ? kvRow('Discount' + (o.couponCode ? ' (' + o.couponCode + ')' : ''), '\u2212' + money(o.discountMinor, o.currency)) : null,
+      o.requiresShipping ? kvRow('Shipping' + (o.shippingMethodName ? ' (' + o.shippingMethodName + ')' : ''), money(o.shippingMinor, o.currency)) : null,
+      o.codFeeMinor ? kvRow('COD fee', money(o.codFeeMinor, o.currency)) : null,
+      o.cgstMinor || o.sgstMinor ? [kvRow('CGST', money(o.cgstMinor, o.currency)), kvRow('SGST', money(o.sgstMinor, o.currency))]
+        : o.igstMinor ? kvRow('IGST', money(o.igstMinor, o.currency)) : kvRow('Tax', money(o.taxMinor, o.currency)),
+      el('div', { class: 'summary-row total' }, el('span', { text: 'Total' }), el('span', { text: money(o.totalMinor, o.currency) })),
+      el('p', { class: 'muted small', text: (o.pricesIncludeTax ? 'Prices include GST.' : 'GST added on top of prices.')
+        + (o.buyerStateCode ? ' Place of supply: ' + o.buyerStateCode + '.' : '') + (o.buyerGstin ? ' Buyer GSTIN: ' + o.buyerGstin + '.' : '') }),
+      o.paymentMethod === 'COD' ? el('div', { class: 'alert ' + (o.paidAt ? 'success' : 'warning') + ' small',
+        text: o.paidAt ? 'Cash on delivery \u2013 cash collected.' : 'Cash on delivery \u2013 collect ' + money(o.totalMinor, o.currency) + ' at delivery. Marking the order delivered records the cash as received.' }) : null,
+      d.payment ? el('div', { class: 'mt small' },
+        el('div', null, 'Payment: ', UI.badge(d.payment.status), ' via ', d.payment.provider === 'demo' ? 'Demo provider' : d.payment.provider === 'cod' ? 'Cash on delivery' : d.payment.provider),
+        d.payment.providerPaymentId ? el('div', { class: 'muted', text: 'Ref: ' + d.payment.providerPaymentId }) : null,
+        d.payment.refundedMinor ? el('div', { text: 'Refunded: ' + money(d.payment.refundedMinor, o.currency) }) : null,
+        d.payment.failureReason ? el('div', { class: 'muted', text: 'Last failure: ' + d.payment.failureReason }) : null) : null,
+      o.invoiceNumber ? el('a', { class: 'btn secondary block mt', href: '#/orders/' + id + '/invoice', text: 'Invoice ' + o.invoiceNumber }) : null);
+
+    const customer = el('div', { class: 'card' }, el('h3', { text: 'Customer' }),
+      el('div', { text: d.customerName }), el('div', null, el('a', { href: 'mailto:' + d.customerEmail, text: d.customerEmail })),
+      a ? el('div', { class: 'mt' }, el('strong', { text: 'Ship to' }), el('div', { text: a.name }), el('div', { text: a.line1 }),
+        a.line2 ? el('div', { text: a.line2 }) : null, el('div', { text: a.city + ', ' + a.state + ' ' + a.postalCode + ', ' + a.country }),
+        el('div', { class: 'muted', text: a.phone })) : null);
+
+    const shipments = o.shipments && o.shipments.length ? el('div', { class: 'card' }, el('h3', { text: 'Shipments' }),
+      o.shipments.map((s) => el('p', null, UI.badge(s.status), ' ', s.carrier, s.trackingNumber ? ' \u00B7 ' + s.trackingNumber : '',
+        s.trackingUrl ? el('span', null, ' \u00B7 ', el('a', { href: s.trackingUrl, target: '_blank', rel: 'noopener noreferrer', text: 'tracking' })) : null,
+        el('span', { class: 'muted small', text: ' \u00B7 ' + UI.date(s.shippedAt) + (s.deliveredAt ? ' \u2192 delivered ' + UI.date(s.deliveredAt) : '') })))) : null;
+
+    const actionCards = [];
+    if (writable && d.actions.canShip) {
+      const ship = el('form', null,
+        el('div', { class: 'row' }, UI.field('Carrier', input('carrier', { required: true, maxlength: '80', placeholder: 'Delhivery, Blue Dart, India Post\u2026' })),
+          UI.field('Tracking number', input('trackingNumber', { maxlength: '120' }))),
+        UI.field('Tracking URL (optional)', input('trackingUrl', { maxlength: '500', placeholder: 'https://' })),
+        el('button', { class: 'btn', type: 'submit', text: 'Mark as shipped' }));
+      onSubmit(ship, async (v) => {
+        await Api.post(API + '/orders/' + id + '/shipments', { carrier: v.carrier, trackingNumber: v.trackingNumber || null, trackingUrl: v.trackingUrl || null });
+        UI.toast('Order marked as shipped; the customer is notified by email', 'success');
+        refresh();
+      });
+      actionCards.push(el('div', { class: 'card' }, el('h3', { text: 'Ship order' }), ship));
+    }
+    if (writable && d.actions.canMarkDelivered) {
+      const cod = o.paymentMethod === 'COD' && !o.paidAt;
+      const b = el('button', { class: 'btn', type: 'button', text: cod ? 'Mark delivered & cash collected' : 'Mark as delivered' });
+      b.addEventListener('click', () => UI.busy(b, async () => {
+        if (cod && !confirm('Confirm the courier collected ' + money(o.totalMinor, o.currency) + ' in cash? An invoice will be issued.')) return;
+        try { await Api.post(API + '/orders/' + id + '/delivered'); refresh(); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      actionCards.push(el('div', { class: 'card' }, el('h3', { text: 'Delivery' }), b));
+    }
+    if (can('REFUNDS') && d.actions.canRefund) {
+      const refund = el('form', null,
+        el('div', { class: 'row' },
+          UI.field('Amount (\u20B9)', input('amount', { value: UI.fromMinor(d.actions.refundableMinor), inputmode: 'decimal' }), 'Refundable: ' + money(d.actions.refundableMinor, o.currency)),
+          UI.field('Reason', input('reason', { maxlength: '300' }))),
+        o.requiresShipping ? el('label', { class: 'check mb' }, input('restock', { type: 'checkbox', checked: true }), 'Return items to stock (full refunds only)') : null,
+        el('button', { class: 'btn danger', type: 'submit', text: 'Issue refund' }));
+      onSubmit(refund, async (v) => {
+        const amount = UI.toMinor(v.amount);
+        if (!confirm('Refund ' + money(amount, o.currency) + ' for order ' + o.orderNumber + '?')) return;
+        await Api.post(API + '/orders/' + id + '/refund', { amountMinor: amount, restock: Boolean(v.restock), reason: v.reason || null });
+        UI.toast('Refund issued', 'success');
+        refresh();
+      });
+      actionCards.push(el('div', { class: 'card' }, el('h3', { text: 'Refund' }),
+        el('p', { class: 'muted small', text: 'A full refund also revokes access to any digital items in this order.' }), refund));
+    }
+    if (writable && d.actions.canCancel) {
+      const cancel = el('form', { class: 'inline-form' }, UI.field('Reason (sent to the customer)', input('reason', { maxlength: '300', class: 'wide' })),
+        el('button', { class: 'btn danger', type: 'submit', text: 'Cancel order' }));
+      onSubmit(cancel, async (v) => {
+        if (!confirm('Cancel this unpaid order? Its stock will be returned to inventory.')) return;
+        await Api.post(API + '/orders/' + id + '/cancel', { reason: v.reason || null });
+        refresh();
+      });
+      actionCards.push(el('div', { class: 'card' }, el('h3', { text: 'Cancel' }), cancel));
+    }
+
+    mount(view(),
+      el('p', { class: 'small' }, el('a', { href: '#/orders', text: '\u2190 Orders' })),
+      head('Order ' + o.orderNumber, UI.badge(o.status)),
+      el('p', { class: 'muted', text: 'Placed ' + UI.date(o.placedAt) + (o.paidAt ? ' \u00B7 paid ' + UI.date(o.paidAt) : '') + (o.expiresAt && o.status === 'PENDING_PAYMENT' ? ' \u00B7 payment window ends ' + UI.date(o.expiresAt) : '') }),
+      o.status === 'NEEDS_ATTENTION' ? el('div', { class: 'alert error', text: 'Payment arrived after the order expired and the stock was no longer available (or the amount did not match). Refund the customer or contact them.' }) : null,
+      el('div', { class: 'split' }, el('div', null, el('div', { class: 'card' }, lines), shipments, actionCards), el('div', null, summary, customer)));
+  }
+
+  function kvRow(label, value) {
+    return el('div', { class: 'summary-row' }, el('span', { text: label }), el('span', { text: value }));
+  }
+
+  async function orderInvoiceView(id) {
+    const inv = await Api.get(API + '/orders/' + id + '/invoice');
+    Invoice.render(view(), inv, '#/orders/' + id, 'Back to order');
+  }
+
+  // ================================================================== entitlements
+
+  let entitlementEmail = '';
+
+  async function entitlementsView() {
+    const qs = new URLSearchParams({ size: '100' });
+    if (entitlementEmail) qs.set('customerEmail', entitlementEmail);
+    const result = await Api.get(API + '/entitlements?' + qs.toString());
+    const writable = can('ORDERS_WRITE');
+    const search = el('form', { class: 'filters' }, input('customerEmail', { type: 'search', placeholder: 'Customer email', value: entitlementEmail }),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Search' }));
+    search.addEventListener('submit', (e) => { e.preventDefault(); entitlementEmail = UI.formValues(search).customerEmail; entitlementsView(); });
+
+    const rows = result.items.map((x) => {
+      const revoke = el('button', { class: 'btn ghost small', type: 'button', text: 'Revoke' });
+      revoke.addEventListener('click', () => UI.busy(revoke, async () => {
+        const reason = prompt('Reason for revoking access to "' + x.productTitle + '"?');
+        if (!reason) return;
+        try { await Api.post(API + '/entitlements/' + x.id + '/revoke', { reason }); entitlementsView(); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      return el('tr', null, el('td', { text: x.customerEmail }), el('td', { text: x.productTitle }), el('td', { text: UI.label(x.source) }),
+        el('td', null, UI.badge(x.status)), el('td', { class: 'small', text: UI.date(x.grantedAt) }),
+        el('td', { text: x.downloadLimit ? x.downloadsUsed + ' / ' + x.downloadLimit : String(x.downloadsUsed) }),
+        el('td', null, writable && x.status === 'ACTIVE' ? revoke : el('span', { class: 'muted small', text: x.revokeReason || '' })));
+    });
+
+    let grant = null;
+    if (writable) {
+      const products = await Api.get(API + '/products?type=DIGITAL&method=DIRECT&size=100');
+      grant = el('form', { class: 'inline-form' },
+        UI.field('Customer email', input('customerEmail', { type: 'email', required: true })),
+        UI.field('Product', selectEl('productId', products.items.map((p) => [String(p.id), p.title]), '')),
+        UI.field('Reason', input('reason', { required: true, maxlength: '300', class: 'wide', placeholder: 'Support replacement, gift\u2026' })),
+        el('button', { class: 'btn', type: 'submit', text: 'Grant access' }));
+      onSubmit(grant, async (v) => {
+        await Api.post(API + '/entitlements', { customerEmail: v.customerEmail, productId: Number(v.productId), reason: v.reason });
+        UI.toast('Access granted', 'success');
+        entitlementsView();
+      });
+    }
+    mount(view(), head('Digital access'),
+      grant ? el('div', { class: 'card' }, el('h3', { text: 'Grant access manually' }), grant) : null,
+      el('div', { class: 'card' }, search, table(['Customer', 'Product', 'Source', 'Status', 'Granted', 'Downloads', ''], rows, 'No digital access records.')));
+  }
+
+  // ================================================================== affiliate
+
+  async function affiliateView(parts) {
+    const tab = ['links', 'merchants', 'conversions', 'report'].includes(parts[0]) ? parts[0] : 'links';
+    const tabs = el('div', { class: 'tabs' }, [['links', 'Links'], ['merchants', 'Merchants'], ['conversions', 'Conversions'], ['report', 'Report']]
+      .map(([k, label]) => el('a', { href: '#/affiliate/' + k, class: k === tab ? 'active' : '', text: label })));
+    const body = el('div');
+    mount(view(), head('Affiliate'), tabs, body);
+    const writable = can('AFFILIATE_WRITE');
+
+    if (tab === 'links') {
+      const links = await Api.get(API + '/affiliate/links');
+      mount(body, el('div', { class: 'card' },
+        el('p', { class: 'muted', text: 'Affiliate links are added on each affiliate product\u2019s page. Customers are sent through /go/{code} so every click is counted.' }),
+        table(['Product', 'Merchant', 'Tracking link', 'Destination', el('th', { class: 'num', text: 'Clicks (30d)' }), 'Status'], links.map((l) => el('tr', null,
+          el('td', null, el('a', { href: '#/products/' + l.productId, text: l.productTitle })),
+          el('td', { text: l.merchantName }),
+          el('td', null, el('a', { href: l.goUrl, target: '_blank', rel: 'noopener', text: l.goUrl })),
+          el('td', { class: 'small', text: l.destinationUrl.length > 70 ? l.destinationUrl.slice(0, 70) + '\u2026' : l.destinationUrl }),
+          el('td', { class: 'num', text: String(l.clicks30d) }),
+          el('td', null, UI.badge(l.active ? 'ACTIVE' : 'DISABLED')))), 'No affiliate links yet.')));
+    } else if (tab === 'merchants') {
+      const merchants = await Api.get(API + '/affiliate/merchants');
+      mount(body, el('div', { class: 'card' },
+        el('p', { class: 'muted', text: 'A merchant is created automatically the first time you confirm a new affiliate domain. Set a sub-ID parameter (e.g. "ascsubtag", "subid", "aff_sub") to pass each click\u2019s reference to the network for conversion matching.' }),
+        table(['Domain', 'Name', 'Sub-ID parameter', 'Allow http', 'Active', ''], merchants.map((m) => {
+          const name = input('name', { value: m.name, maxlength: '120' });
+          const sub = input('subIdParam', { value: m.subIdParam || '', maxlength: '40', placeholder: 'none' });
+          const http = input('allowHttp', { type: 'checkbox', checked: m.allowHttp });
+          const active = input('active', { type: 'checkbox', checked: m.active });
+          const save = el('button', { class: 'btn small', type: 'button', text: 'Save' });
+          save.addEventListener('click', () => UI.busy(save, async () => {
+            try {
+              await Api.patch(API + '/affiliate/merchants/' + m.id, { name: name.value.trim(), subIdParam: sub.value.trim(), allowHttp: http.checked, active: active.checked });
+              UI.toast('Merchant saved', 'success');
+            } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+          }));
+          return el('tr', null, el('td', { text: m.domain }), el('td', null, name), el('td', null, sub), el('td', null, http), el('td', null, active), el('td', null, writable ? save : null));
+        }), 'No merchants yet.')));
+    } else if (tab === 'conversions') {
+      const result = await Api.get(API + '/affiliate/conversions?size=100');
+      const rows = result.items.map((c) => {
+        const status = selectEl('status', ['PENDING', 'APPROVED', 'REVERSED', 'PAID'], c.status, { disabled: !writable });
+        status.addEventListener('change', async () => {
+          try { await Api.patch(API + '/affiliate/conversions/' + c.id, { status: status.value }); UI.toast('Conversion updated', 'success'); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+        });
+        return el('tr', null, el('td', { text: c.externalTxnId }), el('td', { class: 'small', text: c.clickRef || '' }),
+          el('td', { class: 'num', text: c.saleAmountMinor != null ? money(c.saleAmountMinor) : '' }),
+          el('td', { class: 'num', text: c.commissionMinor != null ? money(c.commissionMinor) : '' }),
+          el('td', null, status), el('td', { text: UI.label(c.source) }), el('td', { class: 'small', text: UI.date(c.reportedAt) }));
+      });
+      let importForm = null;
+      if (writable) {
+        const out = el('div');
+        importForm = el('form', null,
+          UI.field('Paste the CSV exported from your affiliate network',
+            el('textarea', { name: 'csv', required: true, placeholder: 'external_txn_id,click_ref,sale_amount,commission,status\nTXN-1001,abc123,1499.00,74.95,approved' }),
+            'Columns: external_txn_id, click_ref, sale_amount, commission, status (pending/approved/reversed/paid). Amounts in rupees.'),
+          el('button', { class: 'btn', type: 'submit', text: 'Import' }), out);
+        onSubmit(importForm, async (v) => {
+          const r = await Api.post(API + '/affiliate/conversions/import', { csv: v.csv });
+          mount(out, el('div', { class: 'alert ' + (r.errors.length ? 'warning' : 'success') },
+            'Created ' + r.created + ', updated ' + r.updated + ', matched to clicks ' + r.matchedClicks + '.',
+            r.errors.length ? el('ul', null, r.errors.map((x) => el('li', { text: x }))) : null));
+        });
+      }
+      mount(body, importForm ? el('div', { class: 'card' }, el('h3', { text: 'Import conversions' }), importForm) : null,
+        el('div', { class: 'card' }, table(['Transaction', 'Click ref', el('th', { class: 'num', text: 'Sale' }), el('th', { class: 'num', text: 'Commission' }), 'Status', 'Source', 'Reported'], rows, 'No conversions recorded yet.')));
+    } else {
+      const r = await Api.get(API + '/affiliate/report');
+      mount(body,
+        el('div', { class: 'stats' }, stat('Clicks (7 days)', r.clicks7d), stat('Clicks (30 days)', r.clicks30d),
+          Object.entries(r.commissionByStatusMinor || {}).map(([k, v]) => stat('Commission ' + UI.label(k).toLowerCase(), money(v))),
+          Object.entries(r.conversionsByStatus || {}).map(([k, v]) => stat('Conversions ' + UI.label(k).toLowerCase(), v))),
+        el('div', { class: 'card' }, el('h3', { text: 'Top links (30 days)' }),
+          table(['Product', 'Merchant', el('th', { class: 'num', text: 'Clicks' })], r.topLinks.map((l) => el('tr', null,
+            el('td', null, el('a', { href: '#/products/' + l.productId, text: l.productTitle })), el('td', { text: l.merchantName }),
+            el('td', { class: 'num', text: String(l.clicks30d) }))), 'No clicks yet.')));
+    }
+  }
+
+  // ================================================================== settings
+
+  async function settingsView() {
+    const [store, methods, smtp, states] = await Promise.all([
+      Api.get(API + '/settings/store'), Api.get(API + '/settings/shipping-methods'), Api.get(API + '/settings/smtp'),
+      Api.get('/api/' + SF + '/catalog/states')]);
+
+    const storeForm = el('form', { class: 'card' }, el('h2', { text: 'Store & invoice details' }),
+      el('div', { class: 'row' },
+        UI.field('Store name', input('storeName', { value: store.storeName, required: true, maxlength: '120' })),
+        UI.field('Support email', input('supportEmail', { type: 'email', value: store.supportEmail || '', maxlength: '254' }))),
+      el('div', { class: 'row' },
+        UI.field('Seller legal name', input('sellerLegalName', { value: store.sellerLegalName || '', maxlength: '200' })),
+        UI.field('GSTIN', input('sellerTaxId', { value: store.sellerTaxId || '', maxlength: '15', placeholder: '27ABCDE1234F1Z5' }), 'Your state is filled in from the GSTIN.')),
+      UI.field('Registered address (printed on invoices)', el('textarea', { name: 'sellerAddress', maxlength: '500', text: store.sellerAddress || '' })),
+      el('div', { class: 'row' },
+        UI.field('Seller state', selectEl('sellerStateCode', [['', 'Not set'], ...states.map((s) => [s.code, s.name + ' (' + s.code + ')'])], store.sellerStateCode || ''),
+          'Same-state buyers pay CGST + SGST; other states pay IGST.'),
+        UI.field('Invoice number prefix', input('invoicePrefix', { value: store.invoicePrefix, maxlength: '10' }), 'Invoices are numbered PREFIX-YEAR-000001.')),
+      el('div', { class: 'row' },
+        UI.field('Default GST rate', selectEl('taxRateBps', GST_RATES.map((r) => [String(r), r / 100 + '%']).concat(
+          GST_RATES.includes(store.taxRateBps) ? [] : [[String(store.taxRateBps), store.taxRateBps / 100 + '% (custom)']]), String(store.taxRateBps)),
+          'Used for products without their own GST rate.'),
+        UI.field('Default HSN / SAC', input('defaultHsnSac', { value: store.defaultHsnSac || '', maxlength: '8', inputmode: 'numeric' }))),
+      el('label', { class: 'check mb' }, input('pricesIncludeTax', { type: 'checkbox', checked: store.pricesIncludeTax }),
+        'Prices already include GST (GST is shown as a breakdown, not added on top)'),
+      el('button', { class: 'btn', type: 'submit', text: 'Save store details' }));
+    onSubmit(storeForm, async (v) => {
+      await Api.put(API + '/settings/store', {
+        storeName: v.storeName, supportEmail: v.supportEmail, sellerLegalName: v.sellerLegalName, sellerTaxId: v.sellerTaxId,
+        sellerAddress: v.sellerAddress, taxRateBps: intOrNull(v.taxRateBps), invoicePrefix: v.invoicePrefix,
+        sellerStateCode: v.sellerStateCode, defaultHsnSac: v.defaultHsnSac, pricesIncludeTax: Boolean(v.pricesIncludeTax)
+      });
+      settingsView();
+      UI.toast('Store details saved', 'success');
+    });
+
+    const commerceForm = el('form', { class: 'card' }, el('h2', { text: store.affiliateOnly ? 'Reviews' : 'Delivery, cash on delivery & reviews' }),
+      store.affiliateOnly
+        ? el('p', { class: 'muted small', text: 'Affiliate-only mode is on: shoppers buy on partner sites, so delivery areas and cash on delivery are not used on this storefront.' })
+        : (SF === 'shop' ? [
+        el('div', { class: 'row' },
+          UI.field('Deliver to', selectEl('pincodeMode', [['ALL', 'All PIN codes'], ['ALLOW', 'Only the PIN codes listed'], ['BLOCK', 'All except the PIN codes listed']], store.pincodeMode)),
+          UI.field('Delivery estimate shown to buyers', input('deliveryEstimate', { value: store.deliveryEstimate || '', maxlength: '80', placeholder: 'Delivered in 3\u20136 working days' }))),
+        UI.field('PIN codes', el('textarea', { name: 'pincodeList', rows: '3', text: store.pincodeList || '' }),
+          'Full 6-digit PIN codes or prefixes (e.g. 4110 for all of 4110xx), separated by commas, spaces or new lines.'),
+        el('label', { class: 'check mb' }, input('codEnabled', { type: 'checkbox', checked: store.codEnabled }), 'Offer cash on delivery'),
+        el('div', { class: 'row' },
+          UI.field('COD order limit (\u20B9)', input('codMax', { value: UI.fromMinor(store.codMaxMinor), inputmode: 'decimal', placeholder: 'No limit' })),
+          UI.field('COD fee (\u20B9)', input('codFee', { value: UI.fromMinor(store.codFeeMinor), inputmode: 'decimal' }))),
+        UI.field('COD only for these PIN codes (optional)', el('textarea', { name: 'codPincodeList', rows: '2', text: store.codPincodeList || '' }),
+          'Leave empty to allow COD wherever you deliver.')
+      ] : el('p', { class: 'muted small', text: 'Digital products are delivered instantly, so delivery areas and cash on delivery do not apply.' })),
+      el('label', { class: 'check mb' }, input('reviewsAutoApprove', { type: 'checkbox', checked: store.reviewsAutoApprove }),
+        'Publish customer reviews immediately (otherwise approve them on the Reviews page)'),
+      el('button', { class: 'btn', type: 'submit', text: 'Save' }));
+    onSubmit(commerceForm, async (v) => {
+      const body = { reviewsAutoApprove: Boolean(v.reviewsAutoApprove) };
+      if (SF === 'shop' && !store.affiliateOnly) {
+        Object.assign(body, {
+          pincodeMode: v.pincodeMode, pincodeList: v.pincodeList, deliveryEstimate: v.deliveryEstimate,
+          codEnabled: Boolean(v.codEnabled), codMaxMinor: v.codMax === '' ? 0 : UI.toMinor(v.codMax),
+          codFeeMinor: v.codFee === '' ? 0 : UI.toMinor(v.codFee), codPincodeList: v.codPincodeList
+        });
+      }
+      await Api.put(API + '/settings/store', body);
+      settingsView();
+      UI.toast('Saved', 'success');
+    });
+
+    const methodRows = methods.map((m) => {
+      const name = input('name', { value: m.name, maxlength: '120' });
+      const rate = input('rate', { value: UI.fromMinor(m.rateMinor), class: 'num-input', inputmode: 'decimal' });
+      const free = input('free', { value: UI.fromMinor(m.freeAboveMinor), class: 'num-input', inputmode: 'decimal', placeholder: 'never' });
+      const active = input('active', { type: 'checkbox', checked: m.active });
+      const save = el('button', { class: 'btn small', type: 'button', text: 'Save' });
+      save.addEventListener('click', () => UI.busy(save, async () => {
+        try {
+          await Api.put(API + '/settings/shipping-methods/' + m.id, { name: name.value.trim(), rateMinor: UI.toMinor(rate.value || '0'),
+            freeAboveMinor: free.value.trim() === '' ? 0 : UI.toMinor(free.value), active: active.checked });
+          UI.toast('Shipping method saved', 'success');
+        } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      return el('tr', null, el('td', null, name), el('td', null, rate), el('td', null, free), el('td', null, active), el('td', null, save));
+    });
+    const addMethod = el('form', { class: 'inline-form mt' },
+      UI.field('Name', input('name', { required: true, maxlength: '120', placeholder: 'Express delivery' })),
+      UI.field('Rate (\u20B9)', input('rate', { required: true, inputmode: 'decimal' })),
+      UI.field('Free above (\u20B9, optional)', input('free', { inputmode: 'decimal' })),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Add method' }));
+    onSubmit(addMethod, async (v) => {
+      await Api.post(API + '/settings/shipping-methods', { name: v.name, rateMinor: UI.toMinor(v.rate), freeAboveMinor: minorOrNull(v.free), active: true });
+      settingsView();
+    });
+
+    const smtpForm = el('form', { class: 'card' }, el('h2', { text: 'Email (SMTP)' }),
+      el('p', { class: 'muted', text: 'Order confirmations, shipping updates, refunds, email verification and password resets for this storefront are sent through this server. Works with Gmail/Google Workspace (app password), Zoho, Outlook, Amazon SES, SendGrid, Brevo or any SMTP provider.' }),
+      el('label', { class: 'check mb' }, input('enabled', { type: 'checkbox', checked: smtp.enabled }), 'Send emails'),
+      el('div', { class: 'row' },
+        UI.field('SMTP host', input('host', { value: smtp.host || '', maxlength: '253', placeholder: 'smtp.gmail.com' })),
+        UI.field('Port', input('port', { type: 'number', value: smtp.port == null ? '' : String(smtp.port), placeholder: '587' })),
+        UI.field('Security', selectEl('security', [['STARTTLS', 'STARTTLS (port 587)'], ['SSL', 'SSL/TLS (port 465)'], ['NONE', 'None (not recommended)']], smtp.security))),
+      el('div', { class: 'row' },
+        UI.field('Username', input('username', { value: smtp.username || '', maxlength: '254', autocomplete: 'off' })),
+        UI.field('Password', input('password', { type: 'password', autocomplete: 'new-password', placeholder: smtp.passwordSet ? '\u2022\u2022\u2022\u2022\u2022\u2022 (saved \u2013 leave blank to keep)' : '' }),
+          'Stored encrypted. Never shown again after saving.')),
+      el('div', { class: 'row' },
+        UI.field('From email', input('fromEmail', { type: 'email', value: smtp.fromEmail || '', maxlength: '254', placeholder: 'orders@yourstore.in' })),
+        UI.field('From name', input('fromName', { value: smtp.fromName || '', maxlength: '120' }))),
+      el('div', { class: 'actions' }, el('button', { class: 'btn', type: 'submit', text: 'Save email settings' }),
+        smtp.passwordSet ? el('label', { class: 'check' }, input('clearPassword', { type: 'checkbox' }), 'Remove saved password') : null));
+    onSubmit(smtpForm, async (v) => {
+      const body = { enabled: Boolean(v.enabled), host: v.host, port: intOrNull(v.port), username: v.username, security: v.security,
+        fromEmail: v.fromEmail, fromName: v.fromName };
+      if (v.clearPassword) body.password = '';
+      else if (v.password) body.password = v.password;
+      await Api.put(API + '/settings/smtp', body);
+      settingsView();
+      UI.toast('Email settings saved', 'success');
+    });
+    const testForm = el('form', { class: 'inline-form' },
+      UI.field('Send a test email to', input('to', { type: 'email', required: true, class: 'wide', value: me.email })),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Send test' }));
+    onSubmit(testForm, async (v) => { await Api.post(API + '/settings/smtp/test', { to: v.to }); }, 'Test email sent. Check the inbox (and spam folder).');
+    smtpForm.appendChild(el('div', { class: 'mt' }, testForm));
+
+    mount(view(), head('Settings'), storeForm, commerceForm,
+      el('div', { class: 'card' }, el('h2', { text: 'Shipping methods' }),
+        table(['Name', 'Rate (\u20B9)', 'Free above (\u20B9)', 'Active', ''], methodRows, 'No shipping methods.'), addMethod),
+      smtpForm);
+  }
+
+  async function notificationsView(page) {
+    const p = typeof page === 'number' ? page : 0;
+    const result = await Api.get(API + '/notifications?page=' + p + '&size=50');
+    const retryBtn = (n) => {
+      const b = el('button', { class: 'btn ghost small', type: 'button', text: 'Retry' });
+      b.addEventListener('click', () => UI.busy(b, async () => {
+        try { await Api.post(API + '/notifications/' + n.id + '/retry'); UI.toast('Queued for sending', 'success'); notificationsView(p); }
+        catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      return b;
+    };
+    mount(view(), head('Email log'),
+      el('p', { class: 'muted', text: '"Skipped" means email is not configured or turned off in Settings. Emails that fail are retried automatically (after 1, 5 and 15 minutes, then 1 and 3 hours) before being marked failed.' }),
+      el('div', { class: 'card' }, table(['When', 'To', 'Subject', 'Type', 'Status', 'Error'], result.items.map((n) => el('tr', null,
+        el('td', { class: 'small', text: UI.date(n.createdAt) }), el('td', { text: n.recipient }), el('td', { text: n.subject }),
+        el('td', { class: 'small', text: UI.label(n.kind) }),
+        el('td', null, UI.badge(n.status, n.status === 'PENDING' && n.attempts ? 'Retrying' : null),
+          n.attempts > 1 ? el('div', { class: 'muted small', text: n.attempts + ' attempts' }) : null,
+          n.status === 'PENDING' && n.nextAttemptAt ? el('div', { class: 'muted small', text: 'next ' + UI.date(n.nextAttemptAt) }) : null),
+        el('td', { class: 'small' }, n.error || '', n.retryable ? [' ', retryBtn(n)] : null))), 'No emails yet.'),
+      pager(result, (pg) => notificationsView(pg))));
+  }
+
+  // ================================================================== staff
+
+  async function staffView() {
+    const staff = await Api.get(API + '/staff');
+    const out = el('div');
+    const rows = staff.map((s) => {
+      const role = selectEl('role', ROLES, s.role);
+      const status = selectEl('status', ['ACTIVE', 'DISABLED'], s.status);
+      const save = el('button', { class: 'btn small', type: 'button', text: 'Save' });
+      const reset = el('button', { class: 'btn ghost small', type: 'button', text: 'Reset password' });
+      save.addEventListener('click', () => UI.busy(save, async () => {
+        try { await Api.patch(API + '/staff/' + s.id, { role: role.value, status: status.value }); UI.toast('Saved', 'success'); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      reset.addEventListener('click', () => UI.busy(reset, async () => {
+        if (!confirm('Generate a new temporary password for ' + s.email + '?')) return;
+        try {
+          const r = await Api.post(API + '/staff/' + s.id + '/reset-password');
+          mount(out, tempPasswordAlert(s.email, r.temporaryPassword));
+        } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      const self = s.id === me.id;
+      return el('tr', null,
+        el('td', null, el('div', { text: s.fullName }), el('div', { class: 'muted small', text: s.email })),
+        el('td', null, self ? UI.label(s.role) : role), el('td', null, self ? UI.badge(s.status) : status),
+        el('td', { text: s.mfaEnabled ? 'On' : 'Off' }), el('td', { class: 'small', text: s.lastLoginAt ? UI.date(s.lastLoginAt) : 'Never' }),
+        el('td', null, self ? el('span', { class: 'muted small', text: 'You' }) : el('div', { class: 'actions' }, save, reset)));
+    });
+    const add = el('form', { class: 'inline-form' },
+      UI.field('Email', input('email', { type: 'email', required: true })),
+      UI.field('Full name', input('fullName', { required: true, maxlength: '120' })),
+      UI.field('Role', selectEl('role', ROLES, 'SUPPORT')),
+      el('button', { class: 'btn', type: 'submit', text: 'Add staff member' }));
+    onSubmit(add, async (v) => {
+      const r = await Api.post(API + '/staff', v);
+      await staffView();
+      mount(document.getElementById('staff-out'), tempPasswordAlert(r.staff.email, r.temporaryPassword));
+    });
+    out.id = 'staff-out';
+    mount(view(), head('Staff'),
+      el('p', { class: 'muted', text: 'Staff accounts only work in the ' + SF_NAME + ' admin. Roles: Master admin (everything), Catalog manager (products, stock, files, affiliate), Order manager (orders, refunds, shipping, digital access), Support (read-only orders and customers).' }),
+      out, el('div', { class: 'card' }, add), el('div', { class: 'card' }, table(['Name', 'Role', 'Status', 'MFA', 'Last sign-in', ''], rows)));
+  }
+
+  function tempPasswordAlert(email, password) {
+    return el('div', { class: 'alert success' },
+      el('div', { text: 'Temporary password for ' + email + ' (shown once \u2013 share it securely; they must change it at first sign-in):' }),
+      el('div', { class: 'secret mt', text: password }));
+  }
+
+  async function auditView(page) {
+    const p = typeof page === 'number' ? page : 0;
+    const result = await Api.get(API + '/audit-log?page=' + p + '&size=50');
+    mount(view(), head('Audit log'),
+      el('div', { class: 'card' }, table(['When', 'Admin', 'Action', 'Entity', 'Details'], result.items.map((a) => el('tr', null,
+        el('td', { class: 'small', text: UI.date(a.createdAt) }), el('td', { text: a.adminEmail }), el('td', { text: UI.label(a.action) }),
+        el('td', { class: 'small', text: (a.entityType || '') + (a.entityId ? ' #' + a.entityId : '') }), el('td', { class: 'small', text: a.details || '' }))), 'No activity yet.'),
+      pager(result, (pg) => auditView(pg))));
+  }
+
+  // ================================================================== my account
+
+  async function accountView() {
+    me = await Api.get(API + '/auth/me');
+    const mfaBox = el('div');
+    const renderMfa = () => {
+      if (me.mfaEnabled) {
+        const form = el('form', { class: 'inline-form' }, UI.field('Current authenticator code', input('code', { required: true, inputmode: 'numeric', maxlength: '8' })),
+          el('button', { class: 'btn danger', type: 'submit', text: 'Turn off two-factor sign-in' }));
+        onSubmit(form, async (v) => { await Api.post(API + '/auth/mfa/disable', { code: v.code }); me.mfaEnabled = false; renderMfa(); UI.toast('Two-factor sign-in turned off'); });
+        mount(mfaBox, el('p', null, UI.badge('ACTIVE', 'On'), ' Two-factor sign-in is protecting your account.'), form);
+      } else {
+        const start = el('button', { class: 'btn', type: 'button', text: 'Set up two-factor sign-in' });
+        start.addEventListener('click', () => UI.busy(start, async () => {
+          try {
+            const setup = await Api.post(API + '/auth/mfa/setup');
+            const confirmForm = el('form', { class: 'inline-form mt' }, UI.field('Code from the app', input('code', { required: true, inputmode: 'numeric', maxlength: '8' })),
+              el('button', { class: 'btn', type: 'submit', text: 'Verify and turn on' }));
+            onSubmit(confirmForm, async (v) => { await Api.post(API + '/auth/mfa/enable', { code: v.code }); me.mfaEnabled = true; renderMfa(); UI.toast('Two-factor sign-in is on', 'success'); });
+            mount(mfaBox,
+              el('p', { text: 'In Google Authenticator, Microsoft Authenticator, Authy or 1Password choose "Enter a setup key" and type this key (time-based):' }),
+              el('div', { class: 'secret', text: setup.secret.replace(/(.{4})/g, '$1 ').trim() }),
+              el('p', { class: 'muted small mt', text: 'Or use this setup URI in apps that accept it:' }),
+              el('div', { class: 'secret small', text: setup.otpauthUri }),
+              confirmForm);
+          } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+        }));
+        mount(mfaBox, el('p', { class: 'muted', text: 'Add a one-time code from an authenticator app to every sign-in.' }), start);
+      }
+    };
+    renderMfa();
+    mount(view(), head('My account'),
+      el('div', { class: 'card medium' }, el('dl', { class: 'kv' },
+        el('dt', { text: 'Name' }), el('dd', { text: me.fullName || '' }), el('dt', { text: 'Email' }), el('dd', { text: me.email }),
+        el('dt', { text: 'Role' }), el('dd', { text: UI.label(me.role) }), el('dt', { text: 'Storefront' }), el('dd', { text: SF_NAME }))),
+      el('div', { class: 'card medium' }, el('h2', { text: 'Change password' }), passwordForm()),
+      el('div', { class: 'card medium' }, el('h2', { text: 'Two-factor sign-in' }), mfaBox));
+  }
+
+  /** Lets feature modules loaded after this file add their own sections to the panel. */
+  window.AdminKit = {
+    SF, SF_NAME, API, GST_RATES, can, view, head, table, pager, onSubmit, input, selectEl, minorOrNull, intOrNull,
+    stat, kvRow, handleAuthError, affiliateOnly: true,
+    register(route, label, perm, fn, after) {
+      ROUTES[route] = fn;
+      const i = NAV.findIndex((n) => n[0] === after);
+      NAV.splice(i < 0 ? NAV.length - 1 : i + 1, 0, [route, label, perm]);
+    }
+  };
+})();

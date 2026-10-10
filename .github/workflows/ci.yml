@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check frontend JavaScript syntax
+        run: for f in frontend/assets/js/*.js; do node --check "$f"; done
+
+      - name: Unit and integration tests (H2 in MySQL mode)
+        working-directory: backend
+        run: mvn -B -ntp verify
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: backend/target/surefire-reports
+
+  mysql-migrations:
+    name: Flyway migrations on MySQL 8
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: hybrid_platform
+          MYSQL_USER: ci
+          MYSQL_PASSWORD: ci-only-password
+          MYSQL_ROOT_PASSWORD: ci-only-root-password
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uci -pci-only-password --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Start the app against MySQL and wait for health
+        working-directory: backend
+        env:
+          DB_URL: jdbc:mysql://127.0.0.1:3306/hybrid_platform?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
+          DB_USERNAME: ci
+          DB_PASSWORD: ci-only-password
+          SPRING_PROFILES_ACTIVE: docker
+          STORAGE_ROOT: ./target/ci-storage
+        run: |
+          mvn -B -ntp -q -DskipTests package
+          java -jar target/*.jar > app.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/actuator/health | grep -q UP; then echo "App is up"; break; fi
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/actuator/health | grep -q UP || (cat app.log; exit 1)
+          curl -fsS http://localhost:8080/robots.txt
+          curl -fsS http://localhost:8080/sitemap.xml | head -c 400
+          curl -fsS "http://localhost:8080/api/shop/catalog/products?q=test" > /dev/null
+          grep -q "MySQL FULLTEXT index" app.log || (cat app.log; echo "full-text index missing"; exit 1)
