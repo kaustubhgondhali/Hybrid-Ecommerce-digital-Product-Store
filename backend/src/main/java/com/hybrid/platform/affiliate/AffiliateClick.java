@@ -63,4 +63,5 @@ public class AffiliateClick {
 
     public String getClickRef() { return clickRef; }
     public Long getLinkId() { return linkId; }
+    public Storefront getStorefront() { return storefront; }
 }

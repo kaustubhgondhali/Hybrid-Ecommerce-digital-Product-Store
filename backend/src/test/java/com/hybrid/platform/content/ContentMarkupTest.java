@@ -38,4 +38,24 @@ class ContentMarkupTest {
                 .isEqualTo("Title one link note body");
         assertThat(ContentMarkup.toHtml("  ")).isEmpty();
     }
+
+    @Test
+    void rendersComparisonTableWithHeaderAndRowLabels() {
+        String html = ContentMarkup.toHtml("Intro\n| Feature | Phone A | Phone B |\n|---|:---:|---|\n"
+                + "| Battery | 5000 mAh | [Deal](/shop/p/b) |\n| Weight | <b>190 g</b>\nAfter");
+        assertThat(html).isEqualTo("<p>Intro</p>\n"
+                + "<div class=\"table-wrap\"><table class=\"compare\">\n<thead><tr>"
+                + "<th scope=\"col\">Feature</th><th scope=\"col\">Phone A</th><th scope=\"col\">Phone B</th></tr></thead>\n<tbody>\n"
+                + "<tr><th scope=\"row\">Battery</th><td>5000 mAh</td><td><a href=\"/shop/p/b\">Deal</a></td></tr>\n"
+                + "<tr><th scope=\"row\">Weight</th><td>&lt;b&gt;190 g&lt;/b&gt;</td><td></td></tr>\n"
+                + "</tbody></table></div>\n<p>After</p>\n");
+    }
+
+    @Test
+    void tableColumnsAreCappedAndPlainTextDropsPipes() {
+        String html = ContentMarkup.toHtml("|a|b|c|d|e|f|g|h|i|j|");
+        assertThat(html).contains("<th scope=\"col\">h</th>").doesNotContain(">i<");
+        assertThat(ContentMarkup.toPlainText("| Feature | A |\n|---|---|\n| Battery | 10h |"))
+                .isEqualTo("Feature A Battery 10h");
+    }
 }

@@ -100,6 +100,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/auth/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/shop/catalog/**", "/api/digital/catalog/**").permitAll()
                         .requestMatchers("/api/payments/webhooks/**").permitAll()
+                        .requestMatchers("/api/*/affiliate/postback").permitAll()
                         .anyRequest().hasRole("CUSTOMER"));
         return http.build();
     }
@@ -121,7 +122,7 @@ public class SecurityConfig {
         http.securityContext(c -> c.securityContextRepository(repo))
                 .csrf(c -> c.csrfTokenRepository(csrfRepo)
                         .csrfTokenRequestHandler(new CsrfTokenRequestAttributeHandler())
-                        .ignoringRequestMatchers("/api/payments/webhooks/**"))
+                        .ignoringRequestMatchers("/api/payments/webhooks/**", "/api/*/affiliate/postback"))
                 .addFilterAfter(new CsrfCookieFilter(), CsrfFilter.class)
                 .sessionManagement(s -> s.sessionFixation().none())
                 .requestCache(AbstractHttpConfigurer::disable)

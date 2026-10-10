@@ -221,6 +221,11 @@ textarea { min-height: 90px; resize: vertical; }
 .content-body { color: var(--silver); line-height: 1.7; }
 .content-body h2 { margin-top: 1.6em; color: var(--text); }
 .content-body ul { padding-left: 1.3em; }
+.content-body .table-wrap { margin: 16px 0 20px; border: 1px solid var(--border); border-radius: 10px; }
+table.compare { min-width: 520px; }
+table.compare tbody th { text-transform: none; letter-spacing: 0; font-size: .9rem; color: var(--text); background: var(--surface-2); white-space: nowrap; }
+table.compare td { vertical-align: top; }
+table.compare tbody tr:last-child > * { border-bottom: 0; }
 .note { border-left: 3px solid var(--primary); background: var(--primary-soft); padding: 8px 12px; border-radius: 0 8px 8px 0; }
 .footer-links { display: flex; flex-wrap: wrap; gap: 6px 14px; flex-basis: 100%; }
 .footer-links a { color: var(--muted); }

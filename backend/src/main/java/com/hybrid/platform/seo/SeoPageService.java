@@ -171,7 +171,7 @@ public class SeoPageService {
         String path = "/" + sf.path() + "/p/" + d.slug();
         String title = entity.getMetaTitle() != null ? entity.getMetaTitle() : d.title() + " | " + s.getStoreName();
         String description = productDescription(entity);
-        String image = d.images().isEmpty() ? null : abs(d.images().get(0).url());
+        String image = d.images().isEmpty() ? null : abs(d.images().get(0).largeUrl());
         ReviewService.Rating rating = reviews.rating(entity.getId());
 
         Long low = null, high = null;
@@ -193,7 +193,13 @@ public class SeoPageService {
         body.append("<div class=\"product-detail\"><div class=\"gallery\"><div class=\"main\">");
         if (!d.images().isEmpty()) {
             var img = d.images().get(0);
-            body.append("<img src=\"").append(esc(img.url())).append("\" alt=\"").append(esc(img.alt())).append("\">");
+            body.append("<img src=\"").append(esc(img.largeUrl())).append("\" alt=\"").append(esc(img.alt())).append('"');
+            if (img.width() != null && img.height() != null) {
+                int w = Math.min(img.width(), 1200);
+                body.append(" width=\"").append(w).append("\" height=\"")
+                        .append(Math.max(1, Math.round(img.height() * (w / (float) img.width())))).append('"');
+            }
+            body.append(" fetchpriority=\"high\">");
         }
         body.append("</div></div><div>");
         body.append("<h1>").append(esc(d.title())).append("</h1>");

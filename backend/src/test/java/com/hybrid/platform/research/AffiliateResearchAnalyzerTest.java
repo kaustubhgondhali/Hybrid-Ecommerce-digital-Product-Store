@@ -60,6 +60,25 @@ class AffiliateResearchAnalyzerTest {
     }
 
     @Test
+    void platformListHasNoDiscontinuedProgramsAndMatchesConnectedHostsExactly() {
+        Report shop = AffiliateResearchAnalyzer.analyze(new Request(Storefront.SHOP, "", "", List.of(), 2),
+                new CatalogSnapshot(List.of(), List.of(), List.of("www.amazon.in", "notflipkart.example")));
+        Report digital = AffiliateResearchAnalyzer.analyze(new Request(Storefront.DIGITAL, "", "", List.of(), 2),
+                new CatalogSnapshot(List.of(), List.of(), List.of()));
+
+        assertThat(shop.platforms()).extracting(p -> p.id()).doesNotContain("shareasale", "appstore");
+        assertThat(digital.platforms()).extracting(p -> p.id()).doesNotContain("shareasale", "appstore").contains("awin");
+        assertThat(shop.platforms()).filteredOn(p -> p.id().equals("flipkart"))
+                .singleElement().satisfies(p -> {
+                    assertThat(p.access()).isEqualTo("VIA_NETWORK");
+                    assertThat(p.merchantConnected()).isFalse();
+                });
+        assertThat(shop.platforms()).filteredOn(p -> p.id().equals("amazon-in"))
+                .singleElement().satisfies(p -> assertThat(p.merchantConnected()).isTrue());
+        assertThat(shop.platforms()).allMatch(p -> p.requirement() != null && !p.requirement().isBlank());
+    }
+
+    @Test
     void emptyInputStillReturnsPlaybookFast() {
         Report r = AffiliateResearchAnalyzer.analyze(
                 new Request(Storefront.SHOP, "", "", List.of(), 2),

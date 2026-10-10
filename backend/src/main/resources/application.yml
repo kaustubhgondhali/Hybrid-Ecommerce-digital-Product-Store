@@ -97,10 +97,16 @@ app:
     shop-admin-password: ${BOOTSTRAP_SHOP_ADMIN_PASSWORD:}
     digital-admin-email: ${BOOTSTRAP_DIGITAL_ADMIN_EMAIL:}
     digital-admin-password: ${BOOTSTRAP_DIGITAL_ADMIN_PASSWORD:}
-  # Seeds [Demo] products when their slugs are missing. Override with DEMO_CATALOG=false.
+  # Seeds [Demo] products when their slugs are missing (dev only by default; the prod profile turns it off).
   demo-catalog: ${DEMO_CATALOG:true}
-  # Affiliate-only mode: catalog shows partner offers; cart/checkout and direct selling are off.
+  # Affiliate-only mode: catalog shows partner offers; customers can save them in the cart and buy on the
+  # partner site. On-site checkout and direct selling are off.
   affiliate-only: ${AFFILIATE_ONLY:true}
+  affiliate:
+    # Partner prices older than this are hidden on the storefront ("check price at partner").
+    price-max-age-days: ${AFFILIATE_PRICE_MAX_AGE_DAYS:7}
+    # Shared secret for /api/{storefront}/affiliate/postback. Leave empty to keep the endpoint disabled.
+    postback-token: ${AFFILIATE_POSTBACK_TOKEN:}
 
 logging:
   level:

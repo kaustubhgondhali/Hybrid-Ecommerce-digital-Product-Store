@@ -47,6 +47,12 @@ public class AffiliateAdminController {
                         req.merchantName(), req.confirmNewDomain()));
     }
 
+    @PostMapping("/products/{productId}/affiliate-link/confirm-price")
+    @PreAuthorize("hasAuthority('PERM_AFFILIATE_WRITE')")
+    public AffiliateService.LinkView confirmPrice(@PathVariable String storefront, @PathVariable Long productId) {
+        return service.confirmPrice(CurrentUser.admin(Storefront.fromPath(storefront)), productId);
+    }
+
     @GetMapping("/affiliate/links")
     @PreAuthorize("hasAuthority('PERM_AFFILIATE_READ')")
     public List<AffiliateService.LinkView> links(@PathVariable String storefront) {

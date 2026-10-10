@@ -31,14 +31,15 @@ public class CatalogPublicService {
     public record VariantView(Long id, String name, String sku, Long priceMinor, Long compareAtMinor, boolean available) {
     }
 
-    public record ImageView(String url, String alt) {
+    /** {@code url} is the original, {@code largeUrl} the product-page size, {@code thumbUrl} the grid size. */
+    public record ImageView(String url, String largeUrl, String thumbUrl, String alt, Integer width, Integer height) {
     }
 
     public record CategoryView(Long id, String name, String slug) {
     }
 
-    public record AffiliateOffer(String merchantName, Long displayPriceMinor, Instant priceCheckedAt, String disclosure,
-                                 String goUrl) {
+    public record AffiliateOffer(String merchantName, Long displayPriceMinor, Instant priceCheckedAt, boolean priceStale,
+                                 String disclosure, String goUrl) {
     }
 
     public record ProductDetail(Long id, String slug, String title, String summary, String description, String brand,
@@ -141,7 +142,8 @@ public class CatalogPublicService {
             affiliateOffer = affiliate.offers(List.of(p.getId())).get(p.getId());
             if (affiliateOffer != null) {
                 offer = new AffiliateOffer(affiliateOffer.merchantName(), affiliateOffer.displayPriceMinor(),
-                        affiliateOffer.priceCheckedAt(), affiliateOffer.disclosure(), affiliateOffer.goUrl());
+                        affiliateOffer.priceCheckedAt(), affiliateOffer.priceStale(), affiliateOffer.disclosure(),
+                        affiliateOffer.goUrl());
             }
         }
         final AffiliateService.OfferView ao = affiliateOffer;
@@ -155,7 +157,8 @@ public class CatalogPublicService {
         return new ProductDetail(p.getId(), p.getSlug(), p.getTitle(), p.getSummary(), p.getDescription(), p.getBrand(),
                 category, p.getProductType().name(), p.getSellingMethod().name(), p.getDigitalFormat(),
                 p.getDeliveryKind() == null ? null : p.getDeliveryKind().name(),
-                p.getImages().stream().map(i -> new ImageView(i.url(), i.getAltText() == null ? p.getTitle() : i.getAltText())).toList(),
+                p.getImages().stream().map(i -> new ImageView(i.url(), i.largeUrl(), i.thumbUrl(),
+                        i.getAltText() == null ? p.getTitle() : i.getAltText(), i.getWidth(), i.getHeight())).toList(),
                 variants, offer, "INR");
     }
 

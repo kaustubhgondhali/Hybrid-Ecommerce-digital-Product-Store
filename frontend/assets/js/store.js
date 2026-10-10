@@ -128,7 +128,7 @@
   function productCard(sf, p) {
     const href = '/' + sf + '/p/' + encodeURIComponent(p.slug);
     return el('a', { class: 'product-card', href },
-      el('div', { class: 'thumb' }, p.imageUrl ? el('img', { src: p.imageUrl, alt: p.title, loading: 'lazy' }) : 'No image'),
+      el('div', { class: 'thumb' }, p.imageUrl ? el('img', { src: p.imageUrl, alt: p.title, loading: 'lazy', decoding: 'async' }) : 'No image'),
       el('div', { class: 'body' },
         el('div', null, typeBadge(p)),
         el('div', { class: 'title', text: p.title }),
@@ -148,12 +148,15 @@
     const p = await Api.get('/api/' + sf + '/catalog/products/' + encodeURIComponent(slug));
     const ratingLine = el('div', { class: 'rating-line' });
 
-    const mainImg = el('img', { src: p.images.length ? p.images[0].url : '', alt: p.images.length ? (p.images[0].alt || p.title) : '' });
+    const first = p.images[0];
+    const mainImg = el('img', {
+      src: first ? (first.largeUrl || first.url) : '', alt: first ? (first.alt || p.title) : '', fetchpriority: 'high'
+    });
     const thumbs = p.images.length > 1 ? el('div', { class: 'thumbs' }, p.images.map((img, i) => {
       const b = el('button', { type: 'button', class: i === 0 ? 'active' : '', 'aria-label': 'Image ' + (i + 1) },
-        el('img', { src: img.url, alt: '' }));
+        el('img', { src: img.thumbUrl || img.url, alt: '', loading: 'lazy', decoding: 'async' }));
       b.addEventListener('click', () => {
-        mainImg.src = img.url;
+        mainImg.src = img.largeUrl || img.url;
         mainImg.alt = img.alt || p.title;
         b.parentElement.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
         b.classList.add('active');
@@ -197,6 +200,9 @@
           offer.displayPriceMinor != null ? el('p', { class: 'price', text: money(offer.displayPriceMinor) }) : null,
           offer.displayPriceMinor != null && offer.priceCheckedAt
             ? el('p', { class: 'muted small', text: 'Price at ' + offer.merchantName + ' as of ' + UI.date(offer.priceCheckedAt, false) + '. The final price is set by the partner store.' })
+            : null,
+          offer.priceStale
+            ? el('p', { class: 'muted small', text: 'See the current price at ' + offer.merchantName + '.' })
             : null,
           el('div', { class: 'actions mb' },
             el('a', { class: 'btn', href: offer.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer', text: 'Buy from ' + offer.merchantName }),
@@ -427,7 +433,7 @@
             text: item.merchantName ? 'Buy from ' + item.merchantName : 'Buy from partner' })
         : null;
       return el('div', { class: 'cart-line' },
-        el('div', { class: 'thumb' }, item.imageUrl ? el('img', { src: item.imageUrl, alt: '' }) : null),
+        el('div', { class: 'thumb' }, item.imageUrl ? el('img', { src: item.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : null),
         el('div', null,
           item.slug ? el('a', { href: '/' + sf + '/p/' + encodeURIComponent(item.slug), text: item.title }) : el('strong', { text: item.title }),
           item.variantName && item.variantName !== 'Default' ? el('div', { class: 'muted small', text: item.variantName }) : null,

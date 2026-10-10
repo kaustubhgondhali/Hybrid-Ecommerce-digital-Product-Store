@@ -14,6 +14,8 @@ import com.hybrid.platform.common.crypto.CryptoService;
 import com.hybrid.platform.common.crypto.Hashing;
 import com.hybrid.platform.common.error.ApiException;
 import com.hybrid.platform.security.AdminPrincipal;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -30,13 +32,16 @@ import java.util.*;
 public class AffiliateService {
 
     public static final String DEFAULT_DISCLOSURE = "We may earn a commission when you buy through this link, at no extra cost to you.";
+    public static final int PRICE_DROP_MIN_PERCENT = 5;
 
-    public record OfferView(String merchantName, Long displayPriceMinor, Instant priceCheckedAt, String disclosure, String goUrl) {
+    /** {@code displayPriceMinor} is null when no price was entered or the price is older than the allowed age. */
+    public record OfferView(String merchantName, Long displayPriceMinor, Instant priceCheckedAt, boolean priceStale,
+                            String disclosure, String goUrl) {
     }
 
     public record LinkView(Long id, Long productId, String productTitle, String code, String goUrl, String destinationUrl,
                            Long merchantId, String merchantName, String merchantDomain, Long displayPriceMinor,
-                           Instant priceCheckedAt, String disclosure, boolean active, long clicks30d) {
+                           Instant priceCheckedAt, boolean priceStale, String disclosure, boolean active, long clicks30d) {
     }
 
     public record MerchantView(Long id, String name, String domain, String subIdParam, boolean allowHttp, boolean active,
@@ -54,8 +59,14 @@ public class AffiliateService {
     public record ImportResult(int created, int updated, int matchedClicks, List<String> errors) {
     }
 
+    /** Click and conversion performance over the last 30 days. {@code conversionRatePct} is null without clicks. */
+    public record PerformanceRow(Long productId, String label, String merchantName, long clicks30d, long conversions30d,
+                                 long commission30dMinor, Double conversionRatePct, Long commissionPerClickMinor) {
+    }
+
     public record Report(long clicks7d, long clicks30d, Map<String, Long> conversionsByStatus,
-                         Map<String, Long> commissionByStatusMinor, List<LinkView> topLinks) {
+                         Map<String, Long> commissionByStatusMinor, List<LinkView> topLinks,
+                         long stalePrices, List<PerformanceRow> products, List<PerformanceRow> merchants) {
     }
 
     public record ClickContext(Long customerId, String ip, String userAgent, String referer) {
@@ -68,10 +79,14 @@ public class AffiliateService {
     private final CatalogQueryService catalog;
     private final AuditService audit;
     private final CryptoService crypto;
+    private final ApplicationEventPublisher publisher;
+    private final Duration priceMaxAge;
 
     public AffiliateService(MerchantRepository merchants, LinkRepository links, ClickRepository clicks,
                             ConversionRepository conversions, CatalogQueryService catalog, AuditService audit,
-                            CryptoService crypto) {
+                            CryptoService crypto, ApplicationEventPublisher publisher,
+                            @Value("${app.affiliate.price-max-age-days:7}") int priceMaxAgeDays) {
+        this.publisher = publisher;
         this.merchants = merchants;
         this.links = links;
         this.clicks = clicks;
@@ -79,6 +94,7 @@ public class AffiliateService {
         this.catalog = catalog;
         this.audit = audit;
         this.crypto = crypto;
+        this.priceMaxAge = Duration.ofDays(Math.max(1, priceMaxAgeDays));
     }
 
     // ------------------------------------------------------------------ storefront queries
@@ -87,13 +103,30 @@ public class AffiliateService {
     public Map<Long, OfferView> offers(Collection<Long> productIds) {
         Map<Long, OfferView> result = new HashMap<>();
         if (productIds.isEmpty()) return result;
+        Instant now = Instant.now();
         for (AffiliateLink l : links.findByProductIdIn(productIds)) {
             if (l.isActive() && l.getMerchant().isActive()) {
-                result.put(l.getProductId(), new OfferView(l.getMerchant().getName(), l.getDisplayPriceMinor(),
-                        l.getPriceCheckedAt(), l.getDisclosure(), "/go/" + l.getCode()));
+                boolean stale = isStale(l, now);
+                result.put(l.getProductId(), new OfferView(l.getMerchant().getName(),
+                        stale ? null : l.getDisplayPriceMinor(), l.getPriceCheckedAt(), stale, l.getDisclosure(),
+                        "/go/" + l.getCode()));
             }
         }
         return result;
+    }
+
+    public Duration priceMaxAge() {
+        return priceMaxAge;
+    }
+
+    static boolean isPriceDrop(Long oldPrice, Long newPrice) {
+        return oldPrice != null && newPrice != null && newPrice > 0
+                && newPrice * 100 <= oldPrice * (100 - PRICE_DROP_MIN_PERCENT);
+    }
+
+    boolean isStale(AffiliateLink l, Instant now) {
+        return l.getDisplayPriceMinor() != null
+                && (l.getPriceCheckedAt() == null || l.getPriceCheckedAt().isBefore(now.minus(priceMaxAge)));
     }
 
     @Transactional(readOnly = true)
@@ -178,17 +211,38 @@ public class AffiliateService {
         if (link == null) {
             link = new AffiliateLink(sf, productId, newCode());
         }
+        Long oldPrice = link.getDisplayPriceMinor();
+        Long newPrice = cmd.displayPriceMinor();
         link.setMerchant(merchant);
         link.setDestinationUrl(cmd.url().trim());
-        if (!Objects.equals(link.getDisplayPriceMinor(), cmd.displayPriceMinor())) {
-            link.setPriceCheckedAt(cmd.displayPriceMinor() == null ? null : Instant.now());
+        if (!Objects.equals(oldPrice, newPrice)) {
+            link.setPriceCheckedAt(newPrice == null ? null : Instant.now());
         }
-        link.setDisplayPriceMinor(cmd.displayPriceMinor());
+        link.setDisplayPriceMinor(newPrice);
         link.setDisclosure(cmd.disclosure() == null || cmd.disclosure().isBlank() ? DEFAULT_DISCLOSURE : cmd.disclosure().trim());
         link.setActive(true);
         link = links.save(link);
         catalog.lockTypes(List.of(productId));
         audit.record(admin, "AFFILIATE_LINK_SET", "Product", productId, "domain=" + domain);
+        if (isPriceDrop(oldPrice, newPrice) && product.status() == ProductStatus.PUBLISHED) {
+            publisher.publishEvent(new AffiliateEvents.PriceDropped(sf, productId, product.title(), merchant.getName(),
+                    oldPrice, newPrice));
+        }
+        return toView(link, product.title(), Map.of());
+    }
+
+    /** Marks the current partner price as re-checked now, so it shows on the storefront again. */
+    @Transactional
+    public LinkView confirmPrice(AdminPrincipal admin, Long productId) {
+        Storefront sf = admin.storefront();
+        var product = catalog.requireProduct(sf, productId);
+        AffiliateLink link = links.findByProductId(productId).filter(l -> l.getStorefront() == sf)
+                .orElseThrow(() -> ApiException.notFound("AFFILIATE_LINK_NOT_FOUND", "This product has no affiliate link yet"));
+        if (link.getDisplayPriceMinor() == null) {
+            throw ApiException.rule("NO_DISPLAY_PRICE", "Enter a display price first");
+        }
+        link.setPriceCheckedAt(Instant.now());
+        audit.record(admin, "AFFILIATE_PRICE_CONFIRMED", "Product", productId, "price=" + link.getDisplayPriceMinor());
         return toView(link, product.title(), Map.of());
     }
 
@@ -257,28 +311,15 @@ public class AffiliateService {
             String[] cols = line.split(",", -1);
             try {
                 String txn = cols[0].trim();
-                if (txn.isEmpty() || txn.length() > 120) throw new IllegalArgumentException("missing transaction id");
                 String clickRef = cols.length > 1 ? cols[1].trim() : "";
                 Long sale = cols.length > 2 ? toMinor(cols[2]) : null;
                 Long commission = cols.length > 3 ? toMinor(cols[3]) : null;
                 AffiliateConversion.Status status = cols.length > 4 && !cols[4].isBlank()
                         ? AffiliateConversion.Status.valueOf(cols[4].trim().toUpperCase(Locale.ROOT))
                         : AffiliateConversion.Status.PENDING;
-                Optional<AffiliateConversion> existing = conversions.findByStorefrontAndExternalTxnId(sf, txn);
-                AffiliateConversion c = existing.orElseGet(() -> new AffiliateConversion(sf, txn, AffiliateConversion.Source.IMPORT));
-                if (!clickRef.isEmpty()) {
-                    c.setClickRef(clickRef);
-                    var click = clicks.findByClickRef(clickRef);
-                    if (click.isPresent()) {
-                        matched++;
-                        links.findById(click.get().getLinkId()).ifPresent(l -> c.setMerchantId(l.getMerchant().getId()));
-                    }
-                }
-                c.setSaleAmountMinor(sale);
-                c.setCommissionMinor(commission);
-                c.setStatus(status);
-                conversions.save(c);
-                if (existing.isPresent()) updated++; else created++;
+                Upsert u = upsertConversion(sf, txn, clickRef, sale, commission, status, AffiliateConversion.Source.IMPORT);
+                if (u.matchedClick()) matched++;
+                if (u.created()) created++; else updated++;
             } catch (RuntimeException e) {
                 errors.add("Line " + (i + 1) + ": " + (e.getMessage() == null ? "invalid row" : e.getMessage()));
                 if (errors.size() > 50) break;
@@ -287,6 +328,76 @@ public class AffiliateService {
         audit.record(admin, "AFFILIATE_CONVERSIONS_IMPORTED", "AffiliateConversion", null,
                 "created=" + created + " updated=" + updated + " errors=" + errors.size());
         return new ImportResult(created, updated, matched, errors);
+    }
+
+    public record PostbackResult(String externalTxnId, String status, boolean created, boolean matchedClick) {
+    }
+
+    /**
+     * Records a conversion reported by an affiliate network's server-to-server postback.
+     * Amounts are in rupees (e.g. "1499.00"); unknown status words are treated as pending.
+     * Repeated postbacks for the same transaction update the existing row.
+     */
+    @Transactional
+    public PostbackResult recordPostback(Storefront sf, String txn, String clickRef, String sale, String commission,
+                                         String status) {
+        Long saleMinor;
+        Long commissionMinor;
+        try {
+            saleMinor = toMinor(sale);
+            commissionMinor = toMinor(commission);
+        } catch (RuntimeException e) {
+            throw ApiException.badRequest("INVALID_AMOUNT", "sale and commission must be amounts like 1499.00");
+        }
+        if ((saleMinor != null && saleMinor < 0) || (commissionMinor != null && commissionMinor < 0)) {
+            throw ApiException.badRequest("INVALID_AMOUNT", "Amounts cannot be negative");
+        }
+        AffiliateConversion.Status mapped = postbackStatus(status);
+        try {
+            Upsert u = upsertConversion(sf, txn, clickRef, saleMinor, commissionMinor, mapped,
+                    AffiliateConversion.Source.POSTBACK);
+            return new PostbackResult(txn.trim(), mapped.name(), u.created(), u.matchedClick());
+        } catch (IllegalArgumentException e) {
+            throw ApiException.badRequest("INVALID_POSTBACK", e.getMessage());
+        }
+    }
+
+    static AffiliateConversion.Status postbackStatus(String raw) {
+        if (raw == null) return AffiliateConversion.Status.PENDING;
+        return switch (raw.trim().toLowerCase(Locale.ROOT)) {
+            case "approved", "approve", "confirmed", "validated", "accepted", "1" -> AffiliateConversion.Status.APPROVED;
+            case "reversed", "rejected", "declined", "cancelled", "canceled", "void", "voided", "-1" ->
+                    AffiliateConversion.Status.REVERSED;
+            case "paid" -> AffiliateConversion.Status.PAID;
+            default -> AffiliateConversion.Status.PENDING;
+        };
+    }
+
+    private record Upsert(boolean created, boolean matchedClick) {
+    }
+
+    private Upsert upsertConversion(Storefront sf, String rawTxn, String rawClickRef, Long sale, Long commission,
+                                    AffiliateConversion.Status status, AffiliateConversion.Source source) {
+        String txn = rawTxn == null ? "" : rawTxn.trim();
+        if (txn.isEmpty() || txn.length() > 120) throw new IllegalArgumentException("missing transaction id");
+        String clickRef = rawClickRef == null ? "" : rawClickRef.trim();
+        if (clickRef.length() > 40) throw new IllegalArgumentException("click reference is too long");
+        Optional<AffiliateConversion> existing = conversions.findByStorefrontAndExternalTxnId(sf, txn);
+        AffiliateConversion c = existing.orElseGet(() -> new AffiliateConversion(sf, txn, source));
+        boolean matched = false;
+        if (!clickRef.isEmpty()) {
+            c.setClickRef(clickRef);
+            var click = clicks.findByClickRef(clickRef).filter(k -> k.getStorefront() == sf);
+            if (click.isPresent()) {
+                matched = true;
+                links.findById(click.get().getLinkId()).ifPresent(l -> c.setMerchantId(l.getMerchant().getId()));
+            }
+        }
+        c.setSaleAmountMinor(sale);
+        c.setCommissionMinor(commission);
+        c.setStatus(status);
+        conversions.save(c);
+        return new Upsert(existing.isEmpty(), matched);
     }
 
     @Transactional(readOnly = true)
@@ -300,9 +411,41 @@ public class AffiliateService {
             byStatus.put(String.valueOf(row[0]), ((Number) row[1]).longValue());
             commission.put(String.valueOf(row[0]), ((Number) row[2]).longValue());
         }
-        List<LinkView> top = listLinks(sf).stream()
+        List<LinkView> all = listLinks(sf);
+        List<LinkView> top = all.stream()
                 .sorted(Comparator.comparingLong(LinkView::clicks30d).reversed()).limit(10).toList();
-        return new Report(c7, c30, byStatus, commission, top);
+        long stale = all.stream().filter(LinkView::priceStale).count();
+
+        Map<Long, long[]> conv = new HashMap<>();
+        for (Object[] row : conversions.byLinkForClicksSince(sf, now.minus(Duration.ofDays(30)),
+                AffiliateConversion.Status.REVERSED)) {
+            conv.put((Long) row[0], new long[]{((Number) row[1]).longValue(), ((Number) row[2]).longValue()});
+        }
+        List<PerformanceRow> products = new ArrayList<>();
+        Map<String, long[]> byMerchant = new LinkedHashMap<>();
+        for (LinkView l : all) {
+            long[] cv = conv.getOrDefault(l.id(), new long[2]);
+            if (l.clicks30d() == 0 && cv[0] == 0) continue;
+            products.add(row(l.productId(), l.productTitle(), l.merchantName(), l.clicks30d(), cv[0], cv[1]));
+            long[] m = byMerchant.computeIfAbsent(l.merchantName(), k -> new long[3]);
+            m[0] += l.clicks30d();
+            m[1] += cv[0];
+            m[2] += cv[1];
+        }
+        Comparator<PerformanceRow> byValue = Comparator.comparingLong(PerformanceRow::commission30dMinor)
+                .thenComparingLong(PerformanceRow::clicks30d).reversed();
+        products.sort(byValue);
+        List<PerformanceRow> merchantRows = new ArrayList<>();
+        byMerchant.forEach((name, m) -> merchantRows.add(row(null, name, name, m[0], m[1], m[2])));
+        merchantRows.sort(byValue);
+        return new Report(c7, c30, byStatus, commission, top, stale,
+                products.size() > 50 ? products.subList(0, 50) : products, merchantRows);
+    }
+
+    private static PerformanceRow row(Long productId, String label, String merchant, long clicks, long convs, long commission) {
+        Double rate = clicks == 0 ? null : Math.round(convs * 10000.0 / clicks) / 100.0;
+        Long perClick = clicks == 0 ? null : Math.round((double) commission / clicks);
+        return new PerformanceRow(productId, label, merchant, clicks, convs, commission, rate, perClick);
     }
 
     @Transactional(readOnly = true)
@@ -352,8 +495,8 @@ public class AffiliateService {
     private LinkView toView(AffiliateLink l, String title, Map<Long, Long> counts) {
         AffiliateMerchant m = l.getMerchant();
         return new LinkView(l.getId(), l.getProductId(), title, l.getCode(), "/go/" + l.getCode(), l.getDestinationUrl(),
-                m.getId(), m.getName(), m.getDomain(), l.getDisplayPriceMinor(), l.getPriceCheckedAt(), l.getDisclosure(),
-                l.isActive(), counts.getOrDefault(l.getId(), 0L));
+                m.getId(), m.getName(), m.getDomain(), l.getDisplayPriceMinor(), l.getPriceCheckedAt(),
+                isStale(l, Instant.now()), l.getDisclosure(), l.isActive(), counts.getOrDefault(l.getId(), 0L));
     }
 
     private static MerchantView toView(AffiliateMerchant m) {

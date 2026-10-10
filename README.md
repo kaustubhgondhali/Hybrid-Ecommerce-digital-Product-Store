@@ -8,9 +8,9 @@ One domain, two independent **affiliate** storefronts:
 | Digital deals | `/digital` (Elaatech) | `/digital/admin` |
 
 By default the site is **affiliate-only** (`AFFILIATE_ONLY=true`): products are partner offers. Shoppers click
-**Buy from partner** and complete purchase on the merchant site (`/go/{code}` tracks the click). There is no
-customer cart or checkout on this domain. There is **no global admin**: a shop admin cannot see or change anything
-in the digital admin, and vice versa.
+**Buy from partner** and complete purchase on the merchant site (`/go/{code}` tracks the click). Customers can
+**save deals in their cart** to buy later on the partner site, but there is no checkout on this domain. There is
+**no global admin**: a shop admin cannot see or change anything in the digital admin, and vice versa.
 
 The server is authoritative for affiliate link validation, click tracking and admin permissions. The browser only
 displays what the server returns. Set `AFFILIATE_ONLY=false` only if you also want to sell products yourself
@@ -22,14 +22,16 @@ displays what the server returns. Set `AFFILIATE_ONLY=false` only if you also wa
 
 | Area | State |
 |---|---|
-| **Affiliate-only mode** (default): partner offers, `/go/{code}` redirects, no storefront cart/checkout | Done |
+| **Affiliate-only mode** (default): partner offers, `/go/{code}` redirects, cart as "saved deals", no checkout | Done |
 | Catalog, categories, images, variants, publish rules | Done |
 | Cart, checkout, stock reservation (optional; off while `AFFILIATE_ONLY=true`) | Available when affiliate-only is disabled |
 | Payments | Only needed if you turn off affiliate-only. Demo provider for that path; Razorpay planned. |
 | Orders: cancel, refund (full/partial, optional restock), shipping + tracking, delivered | Done |
 | GST-style invoices with gapless numbering per storefront and year, print / save as PDF | Done |
 | Digital delivery: files (signed short-lived download links), license keys, customer library | Done |
-| Affiliate: merchants + domain allowlist, `/go/{code}` click tracking, sub-IDs, CSV conversion import, report | Done |
+| Affiliate: merchants + domain allowlist, `/go/{code}` click tracking, sub-IDs, CSV import + signed postback URL, conversion rate per product/merchant | Done |
+| Affiliate prices: hidden on the storefront once older than `AFFILIATE_PRICE_MAX_AGE_DAYS` until re-checked; price-drop email (≥5%, max one per product per customer every 7 days) to customers with the deal in their cart | Done |
+| **Research** admin tool: niche + notes → categories, products to search for, and which affiliate programs fit | Done |
 | Customer accounts: register, verify email, password reset, order history | Done |
 | Admin: roles and permissions, staff, MFA (authenticator app), audit log, forced password change | Done |
 | Email (SMTP) configured per storefront in the admin panel, test email, email log | Done |
@@ -37,8 +39,9 @@ displays what the server returns. Set `AFFILIATE_ONLY=false` only if you also wa
 | GST: HSN/SAC and rate per product, CGST+SGST vs IGST by place of supply, buyer GSTIN, tax-inclusive or exclusive prices | Done |
 | Coupons (percent / fixed, cap, minimum order, dates, usage limits), cash on delivery (shop), PIN code delivery check | Done |
 | Product reviews with moderation, wishlist (per customer, per storefront) | Done |
-| Content pages (legal templates: privacy, terms, refunds, shipping, affiliate disclosure, about, contact) | Done |
-| SEO: server-rendered titles/meta/Open Graph/JSON-LD, canonical URLs, sitemap.xml, robots.txt, 301 redirects, 404 monitor, image thumbnails | Done |
+| Content pages (legal templates: privacy, terms, refunds, shipping, affiliate disclosure, about, contact) and comparison tables (one row per line, cells split by pipes; "Insert comparison table" button in the editor) | Done |
+| SEO: server-rendered titles/meta/Open Graph/JSON-LD, canonical URLs, sitemap.xml, robots.txt, 301 redirects, 404 monitor | Done |
+| Images: 480 px grid thumbnail + 1200 px product-page size generated on upload (older images backfilled at startup), lazy loading | Done |
 | **SEO analyzer** in each admin: site audit, per-product score with checks, live editor with Google preview | Done |
 | Rate limiting on sign-in, registration, password reset, checkout, coupon checks, reviews, PIN code checks and affiliate redirects | Done |
 | Sessions stored in MySQL (users stay signed in across restarts); MySQL full-text product search | Done |
@@ -102,7 +105,8 @@ browser refresh without restarting. Emails that cannot be sent (SMTP not configu
 On first start (or whenever a demo slug is missing), the app seeds a few **[Demo]** products on both
 storefronts so you can see how the catalog, product page, partner offers and digital licences look. They are
 marked with a Demo badge, `noindex`, and titles starting with `[Demo]`. Delete them in each admin panel before
-launch, or set `DEMO_CATALOG=false` in `.env` to stop reseeding missing ones.
+launch, or set `DEMO_CATALOG=false` in `.env` to stop reseeding missing ones. The `prod` profile never seeds
+them unless you set `DEMO_CATALOG=true` explicitly.
 
 ## 4. First-time setup in each admin panel
 
@@ -157,7 +161,9 @@ Runs unit tests (affiliate URL policy, rate limiter, GST arithmetic, SEO analyze
 discounts, PIN code rules, state names, error path grouping) and end-to-end integration tests against an in-memory
 H2 database in MySQL mode: admin setup, publish rules, stock, affiliate redirect, cart, checkout, demo payment
 failure → retry → success, invoice, shipping, a digital license-key product delivered to the customer library,
-coupon + cash on delivery through to delivery, wishlist, and sessions stored in the database. No MySQL is needed
+coupon + cash on delivery through to delivery, wishlist, sessions stored in the database, admin role permissions
+(Support / Catalog manager cannot write outside their role), `/go` redirects with click references, conversion
+postbacks (token, idempotency, click matching), stale partner prices and price-drop alerts. No MySQL is needed
 for tests. The jar is written to `backend/target/hybrid-platform.jar`.
 
 **CI:** `.github/workflows/ci.yml` runs the tests and a JavaScript syntax check on every push and pull request, and
@@ -224,9 +230,11 @@ docs/        Architecture notes and decision records
 
 - Razorpay is not integrated yet (demo payments only).
 - Uploaded files are type- and size-checked but not malware-scanned.
-- Affiliate sales are imported from network CSV reports; automatic postbacks/APIs per network are not built yet.
+- Affiliate sales arrive by CSV import or the generic postback URL; network-specific reporting APIs are not built.
+- Rate limits and uploaded files live on the single server. Before running more than one app server, move rate limits
+  to a shared store (e.g. Redis) and files to object storage (e.g. S3).
 - MFA setup shows a setup key / `otpauth://` URI to enter in the authenticator app (no QR code image).
-- Image thumbnails are generated for JPEG and PNG; WebP uploads are served at their original size.
+- Image renditions are generated for JPEG and PNG; WebP uploads are served at their original size.
 - Coupon start / end dates can be changed but not cleared once set (deactivate the coupon instead).
 - Ranked full-text search needs MySQL; on other databases (tests use H2) search falls back to simple matching.
 - The server error log is shared by the application; each admin only sees errors from its own storefront's URLs.

@@ -59,5 +59,12 @@ public final class AffiliateRepositories {
         @Query("select c.status, count(c), coalesce(sum(c.commissionMinor), 0) from AffiliateConversion c "
                 + "where c.storefront = :sf group by c.status")
         List<Object[]> summary(@Param("sf") Storefront sf);
+
+        /** Per link: conversions (not reversed) and commission for clicks made since {@code since}. */
+        @Query("select k.linkId, count(c), coalesce(sum(c.commissionMinor), 0) from AffiliateConversion c, AffiliateClick k "
+                + "where c.clickRef = k.clickRef and c.storefront = :sf and k.storefront = :sf "
+                + "and k.createdAt >= :since and c.status <> :excluded group by k.linkId")
+        List<Object[]> byLinkForClicksSince(@Param("sf") Storefront sf, @Param("since") Instant since,
+                                            @Param("excluded") AffiliateConversion.Status excluded);
     }
 }

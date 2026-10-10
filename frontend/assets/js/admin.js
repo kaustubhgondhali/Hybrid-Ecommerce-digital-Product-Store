@@ -320,7 +320,7 @@
     });
     const rows = result.items.map((p) => {
       const tr = el('tr', { class: 'clickable' },
-        el('td', null, p.imageUrl ? el('img', { class: 'thumb-sm', src: p.imageUrl, alt: '' }) : el('div', { class: 'thumb-sm' })),
+        el('td', null, p.imageUrl ? el('img', { class: 'thumb-sm', src: p.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : el('div', { class: 'thumb-sm' })),
         el('td', null, el('a', { href: '#/products/' + p.id, text: p.title }), el('div', { class: 'muted small', text: p.slug })),
         el('td', null, el('span', { class: 'badge', text: UI.label(p.productType) }), ' ',
           el('span', { class: 'badge ' + (p.sellingMethod === 'AFFILIATE' ? 'purple' : 'blue'), text: UI.label(p.sellingMethod) })),
@@ -534,7 +534,7 @@
           UI.toast('Alt text saved', 'success');
         } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
       });
-      return el('figure', null, el('img', { src: img.thumbUrl || img.url, alt: img.alt || '' }),
+      return el('figure', null, el('img', { src: img.thumbUrl || img.url, alt: img.alt || '', loading: 'lazy', decoding: 'async' }),
         el('figcaption', null, alt, writable ? del : null));
     }));
     const form = el('form', { class: 'inline-form' },
@@ -557,7 +557,7 @@
     const writable = can('AFFILIATE_WRITE');
     const form = el('form', null,
       UI.field('Affiliate URL', input('url', { value: link ? link.destinationUrl : '', required: true, maxlength: '2048', placeholder: 'https://www.partner.com/product?tag=yourid' }),
-        'Paste the exact link from your affiliate program (Amazon, Flipkart, Impact, CJ, ShareASale, any network). It is stored and redirected unchanged.'),
+        'Paste the exact link from your affiliate program (Amazon, Cuelinks, EarnKaro, impact.com, CJ, Awin, any network). It is stored and redirected unchanged.'),
       el('div', { class: 'row' },
         UI.field('Merchant name (optional)', input('merchantName', { value: link ? link.merchantName : '', maxlength: '120' })),
         UI.field('Display price (\u20B9, optional)', input('displayPrice', { value: link ? UI.fromMinor(link.displayPriceMinor) : '', inputmode: 'decimal' }))),
@@ -577,10 +577,26 @@
       UI.toast('Affiliate link saved', 'success');
       refresh();
     });
-    return el('div', { class: 'card' }, el('h2', { text: 'Affiliate link' }),
+    let staleBox = null;
+    if (link && link.priceStale) {
+      const confirmBtn = writable ? el('button', { class: 'btn small', type: 'button', text: 'Price is still correct' }) : null;
+      if (confirmBtn) confirmBtn.addEventListener('click', () => UI.busy(confirmBtn, async () => {
+        try {
+          await Api.post(API + '/products/' + p.id + '/affiliate-link/confirm-price');
+          UI.toast('Price confirmed', 'success');
+          refresh();
+        } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      staleBox = el('div', { class: 'alert warning' },
+        'The display price was last checked ' + (link.priceCheckedAt ? UI.date(link.priceCheckedAt, false) : 'never')
+          + ', so it is hidden from shoppers. Check the partner page, then update the price or confirm it. ',
+        confirmBtn);
+    }
+    return el('div', { class: 'card' }, el('h2', { text: 'Affiliate link' }), staleBox,
       link ? el('dl', { class: 'kv mb' },
         el('dt', { text: 'Tracking URL' }), el('dd', null, el('a', { href: link.goUrl, target: '_blank', rel: 'noopener', text: location.origin + link.goUrl })),
         el('dt', { text: 'Merchant' }), el('dd', { text: link.merchantName + ' (' + link.merchantDomain + ')' }),
+        el('dt', { text: 'Price checked' }), el('dd', { text: link.priceCheckedAt ? UI.date(link.priceCheckedAt, false) : '\u2014' }),
         el('dt', { text: 'Clicks (30 days)' }), el('dd', { text: String(link.clicks30d) }),
         el('dt', { text: 'Status' }), el('dd', null, UI.badge(link.active ? 'ACTIVE' : 'DISABLED'))) : null,
       form);
@@ -932,6 +948,20 @@
 
   // ================================================================== affiliate
 
+  function perfTable(rows, isProduct) {
+    const num = (t) => el('th', { class: 'num', text: t });
+    return table([isProduct ? 'Product' : 'Merchant', isProduct ? 'Merchant' : null, num('Clicks'), num('Conversions'),
+      num('Conv. rate'), num('Commission'), num('Per click')].filter(Boolean), rows.map((x) => el('tr', null,
+      el('td', null, isProduct ? el('a', { href: '#/products/' + x.productId, text: x.label }) : el('strong', { text: x.label })),
+      isProduct ? el('td', { text: x.merchantName }) : null,
+      el('td', { class: 'num', text: String(x.clicks30d) }),
+      el('td', { class: 'num', text: String(x.conversions30d) }),
+      el('td', { class: 'num', text: x.conversionRatePct == null ? '\u2014' : x.conversionRatePct + '%' }),
+      el('td', { class: 'num', text: money(x.commission30dMinor) }),
+      el('td', { class: 'num', text: x.commissionPerClickMinor == null ? '\u2014' : money(x.commissionPerClickMinor) }))),
+      'No clicks in the last 30 days.');
+  }
+
   async function affiliateView(parts) {
     const tab = ['links', 'merchants', 'conversions', 'report'].includes(parts[0]) ? parts[0] : 'links';
     const tabs = el('div', { class: 'tabs' }, [['links', 'Links'], ['merchants', 'Merchants'], ['conversions', 'Conversions'], ['report', 'Report']]
@@ -942,13 +972,18 @@
 
     if (tab === 'links') {
       const links = await Api.get(API + '/affiliate/links');
-      mount(body, el('div', { class: 'card' },
+      const staleCount = links.filter((l) => l.priceStale).length;
+      mount(body,
+        staleCount ? el('div', { class: 'alert warning' }, staleCount + (staleCount === 1 ? ' price is' : ' prices are')
+          + ' out of date and hidden from shoppers. Open each product to update or confirm it.') : null,
+        el('div', { class: 'card' },
         el('p', { class: 'muted', text: 'Affiliate links are added on each affiliate product\u2019s page. Customers are sent through /go/{code} so every click is counted.' }),
-        table(['Product', 'Merchant', 'Tracking link', 'Destination', el('th', { class: 'num', text: 'Clicks (30d)' }), 'Status'], links.map((l) => el('tr', null,
+        table(['Product', 'Merchant', 'Tracking link', 'Price', el('th', { class: 'num', text: 'Clicks (30d)' }), 'Status'], links.map((l) => el('tr', null,
           el('td', null, el('a', { href: '#/products/' + l.productId, text: l.productTitle })),
           el('td', { text: l.merchantName }),
           el('td', null, el('a', { href: l.goUrl, target: '_blank', rel: 'noopener', text: l.goUrl })),
-          el('td', { class: 'small', text: l.destinationUrl.length > 70 ? l.destinationUrl.slice(0, 70) + '\u2026' : l.destinationUrl }),
+          el('td', null, l.displayPriceMinor == null ? el('span', { class: 'muted', text: '\u2014' })
+            : [money(l.displayPriceMinor), l.priceStale ? [' ', el('span', { class: 'badge amber', text: 'Stale' })] : null]),
           el('td', { class: 'num', text: String(l.clicks30d) }),
           el('td', null, UI.badge(l.active ? 'ACTIVE' : 'DISABLED')))), 'No affiliate links yet.')));
     } else if (tab === 'merchants') {
@@ -996,7 +1031,11 @@
             r.errors.length ? el('ul', null, r.errors.map((x) => el('li', { text: x }))) : null));
         });
       }
-      mount(body, importForm ? el('div', { class: 'card' }, el('h3', { text: 'Import conversions' }), importForm) : null,
+      const postbackUrl = location.origin + '/api/' + SF + '/affiliate/postback?token=YOUR_TOKEN&txn={txn_id}&click_ref={sub_id}&sale={sale_amount}&commission={commission}&status={status}';
+      const postbackCard = el('div', { class: 'card' }, el('h3', { text: 'Automatic import (postback)' }),
+        el('p', { class: 'muted small', text: 'If your network supports server-to-server postbacks, give it this URL. Replace YOUR_TOKEN with the AFFILIATE_POSTBACK_TOKEN value from the server configuration (the endpoint stays off until it is set), and map the {placeholders} to the network\u2019s own macro names. Amounts are in rupees.' }),
+        el('code', { class: 'secret', text: postbackUrl }));
+      mount(body, postbackCard, importForm ? el('div', { class: 'card' }, el('h3', { text: 'Import conversions' }), importForm) : null,
         el('div', { class: 'card' }, table(['Transaction', 'Click ref', el('th', { class: 'num', text: 'Sale' }), el('th', { class: 'num', text: 'Commission' }), 'Status', 'Source', 'Reported'], rows, 'No conversions recorded yet.')));
     } else {
       const r = await Api.get(API + '/affiliate/report');
@@ -1004,10 +1043,11 @@
         el('div', { class: 'stats' }, stat('Clicks (7 days)', r.clicks7d), stat('Clicks (30 days)', r.clicks30d),
           Object.entries(r.commissionByStatusMinor || {}).map(([k, v]) => stat('Commission ' + UI.label(k).toLowerCase(), money(v))),
           Object.entries(r.conversionsByStatus || {}).map(([k, v]) => stat('Conversions ' + UI.label(k).toLowerCase(), v))),
-        el('div', { class: 'card' }, el('h3', { text: 'Top links (30 days)' }),
-          table(['Product', 'Merchant', el('th', { class: 'num', text: 'Clicks' })], r.topLinks.map((l) => el('tr', null,
-            el('td', null, el('a', { href: '#/products/' + l.productId, text: l.productTitle })), el('td', { text: l.merchantName }),
-            el('td', { class: 'num', text: String(l.clicks30d) }))), 'No clicks yet.')));
+        r.stalePrices ? el('div', { class: 'alert warning' }, r.stalePrices + ' partner price(s) are out of date and hidden from shoppers. ',
+          el('a', { href: '#/affiliate/links', text: 'Review links' })) : null,
+        el('p', { class: 'muted small', text: 'Conversions are counted against the clicks that produced them in the last 30 days (reversed sales excluded). Rates fill in as your network reports sales via CSV import or postback.' }),
+        el('div', { class: 'card' }, el('h3', { text: 'Products (30 days)' }), perfTable(r.products, true)),
+        el('div', { class: 'card' }, el('h3', { text: 'Merchants (30 days)' }), perfTable(r.merchants, false)));
     }
   }
 

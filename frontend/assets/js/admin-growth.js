@@ -165,7 +165,7 @@
             analyze();
           } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
         });
-        return el('figure', null, el('img', { src: img.url, alt: img.alt || '' }), el('figcaption', null, alt));
+        return el('figure', null, el('img', { src: img.url, alt: img.alt || '', loading: 'lazy', decoding: 'async' }), el('figcaption', null, alt));
       })) : el('p', { class: 'muted', text: 'This product has no images yet.' }));
 
     mount(view(),
@@ -315,6 +315,26 @@
       }), 'No pages yet.')));
   }
 
+  const COMPARE_TEMPLATE = [
+    '## Quick comparison',
+    '| Feature | Product A | Product B |',
+    '|---|---|---|',
+    '| Price | \u20b9 | \u20b9 |',
+    '| Best for | | |',
+    '| Key spec | | |',
+    '| Where to buy | [View deal](/' + SF + '/p/product-a) | [View deal](/' + SF + '/p/product-b) |'
+  ].join('\n');
+
+  function insertAtCursor(textarea, text) {
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? start;
+    const before = textarea.value.slice(0, start);
+    const block = (before && !before.endsWith('\n\n') ? (before.endsWith('\n') ? '\n' : '\n\n') : '') + text + '\n';
+    textarea.value = before + block + textarea.value.slice(end);
+    textarea.focus();
+    textarea.selectionStart = textarea.selectionEnd = start + block.length;
+  }
+
   async function pageEditView(id) {
     const isNew = id === 'new';
     const p = isNew ? { title: '', slug: '', body: '', metaTitle: '', metaDescription: '', published: false, showInFooter: true, sortOrder: 50 }
@@ -329,7 +349,11 @@
       el('div', { class: 'row' },
         UI.field('Title', input('title', { value: p.title, required: true, maxlength: '200', disabled: !writable })),
         UI.field('URL slug', input('slug', { value: p.slug, maxlength: '120', disabled: !writable }), '/' + SF + '/page/\u2026')),
-      UI.field('Content', body, 'Plain text with simple formatting: "# " or "## " headings, "- " bullet lists, "> " highlighted notes and [link text](https://example.com).'),
+      UI.field('Content', body, 'Plain text with simple formatting: "# " or "## " headings, "- " bullet lists, "> " highlighted notes, [link text](https://example.com) and comparison tables: one row per line, cells separated by "|", e.g. "| Feature | Phone A | Phone B |" then "| Battery | 5000 mAh | 4500 mAh |". The first row is the header.'),
+      writable ? el('div', { class: 'actions' }, el('button', {
+        class: 'btn ghost small', type: 'button', text: 'Insert comparison table',
+        on: { click: () => insertAtCursor(body, COMPARE_TEMPLATE) }
+      })) : null,
       el('div', { class: 'row' },
         el('div', { class: 'field' }, el('label', { text: 'Search title (optional)' }), metaTitle, counter(metaTitle, 60, 65)),
         el('div', { class: 'field' }, el('label', { text: 'Search description (optional)' }), metaDescription, counter(metaDescription, 160, 165))),
@@ -595,6 +619,11 @@
   // ================================================================== affiliate product research
 
   const RESEARCH_TABS = [['run', 'Run research'], ['platforms', 'Affiliate platforms']];
+  const ACCESS_LABEL = { DIRECT: ['Direct', 'green'], NETWORK: ['Network', 'blue'], VIA_NETWORK: ['Via network', 'amber'] };
+  const accessBadge = (a) => {
+    const [text, color] = ACCESS_LABEL[a] || [a || '', ''];
+    return el('span', { class: 'badge ' + color, text });
+  };
 
   async function researchRoute(parts) {
     const tab = RESEARCH_TABS.some(([k]) => k === parts[0]) ? parts[0] : 'run';
@@ -608,11 +637,11 @@
           stat('Catalog products', meta.catalogProducts),
           stat('Connected merchants', meta.connectedMerchants)),
         el('div', { class: 'card' }, el('h2', { text: 'Only platforms with affiliate programs' }),
-          table(['Platform', 'Program', 'Region', 'Strengths', 'Join'], meta.platforms.map((p) => el('tr', null,
-            el('td', null, el('strong', { text: p.name })),
-            el('td', { class: 'small', text: p.program }),
+          table(['Platform', 'How to join', 'Eligibility', 'Region', 'Join'], meta.platforms.map((p) => el('tr', null,
+            el('td', null, el('strong', { text: p.name }), el('div', { class: 'muted small', text: p.program })),
+            el('td', null, accessBadge(p.access)),
+            el('td', { class: 'small', text: p.requirement || '' }),
             el('td', { text: p.region }),
-            el('td', { class: 'small', text: (p.strengths || []).join(' · ') }),
             el('td', null, el('a', { href: p.joinUrl, target: '_blank', rel: 'noopener', text: 'Open' })))),
             'No platforms for this storefront.')));
       return;
@@ -685,10 +714,11 @@
 
     const actions = el('ol', { class: 'security-next' }, r.actions.map((a) => el('li', null, el('div', { text: a }))));
 
-    const platformRows = table(['Platform', 'Fit', 'Program', 'Status'], r.platforms.map((p) => el('tr', null,
-      el('td', null, el('strong', { text: p.name }), el('div', { class: 'muted small', text: (p.strengths || []).slice(0, 2).join(' · ') })),
+    const platformRows = table(['Platform', 'Fit', 'How to join', 'Eligibility', 'Status'], r.platforms.map((p) => el('tr', null,
+      el('td', null, el('strong', { text: p.name }), el('div', { class: 'muted small', text: p.program })),
       el('td', null, scoreBadge(p.fitScore)),
-      el('td', { class: 'small', text: p.program }),
+      el('td', null, accessBadge(p.access)),
+      el('td', { class: 'small', text: p.requirement || '' }),
       el('td', null, p.merchantConnected
         ? el('span', { class: 'badge green', text: 'Connected' })
         : el('a', { class: 'small', href: p.joinUrl, target: '_blank', rel: 'noopener', text: 'Join program' })))),

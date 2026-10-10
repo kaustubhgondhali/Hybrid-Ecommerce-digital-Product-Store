@@ -46,7 +46,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
             post("^/api/(shop|digital)/admin/settings/smtp/test$", "smtp-test", 10, Duration.ofMinutes(10)),
             new Route("GET", Pattern.compile("^/api/(shop|digital)/catalog/pincode/.+$"),
                     new RateLimiter.Rule("pincode", 60, Duration.ofMinutes(1))),
-            new Route("GET", Pattern.compile("^/go/.+$"), new RateLimiter.Rule("affiliate-redirect", 120, Duration.ofMinutes(1))));
+            new Route("GET", Pattern.compile("^/go/.+$"), new RateLimiter.Rule("affiliate-redirect", 120, Duration.ofMinutes(1))),
+            new Route("GET", Pattern.compile("^/api/(shop|digital)/affiliate/postback$"),
+                    new RateLimiter.Rule("affiliate-postback", 600, Duration.ofMinutes(1))),
+            post("^/api/(shop|digital)/affiliate/postback$", "affiliate-postback", 600, Duration.ofMinutes(1)));
 
     private static final Duration LONGEST_WINDOW = Duration.ofHours(1);
 

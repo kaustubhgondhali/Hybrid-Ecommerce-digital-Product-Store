@@ -119,7 +119,7 @@ public class CatalogAdminService {
                         PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100), Sort.by(Sort.Direction.DESC, "updatedAt"))),
                 p -> new AdminProductSummary(p.getId(), p.getTitle(), p.getSlug(), p.getProductType().name(),
                         p.getSellingMethod().name(), p.getStatus().name(),
-                        p.getImages().isEmpty() ? null : p.getImages().get(0).url(),
+                        p.getImages().isEmpty() ? null : p.getImages().get(0).thumbUrl(),
                         p.activeVariants().stream().map(ProductVariant::getPriceMinor).filter(Objects::nonNull).min(Long::compare).orElse(null),
                         p.getUpdatedAt()));
     }
@@ -297,8 +297,8 @@ public class CatalogAdminService {
             FileStorage.StoredFile stored = storage.store(FileStorage.Area.PUBLIC,
                     new SequenceInputStream(new ByteArrayInputStream(header), in), ext, MAX_IMAGE_BYTES);
             ProductImage image = new ProductImage(stored.key(), alt == null || alt.isBlank() ? null : trimTo(alt, 250), p.getImages().size());
-            ImageOptimizer.Result thumb = images.thumbnail(stored.key());
-            image.setRenditions(thumb.thumbKey(), thumb.width(), thumb.height());
+            ImageOptimizer.Result r = images.renditions(stored.key());
+            image.setRenditions(r.thumbKey(), r.largeKey(), r.width(), r.height());
             p.addImage(image);
         }
         audit.record(admin, "PRODUCT_IMAGE_ADDED", "Product", productId, null);
@@ -323,6 +323,7 @@ public class CatalogAdminService {
         p.getImages().remove(img);
         storage.delete(FileStorage.Area.PUBLIC, img.getStorageKey());
         if (img.getThumbKey() != null) storage.delete(FileStorage.Area.PUBLIC, img.getThumbKey());
+        if (img.getLargeKey() != null) storage.delete(FileStorage.Area.PUBLIC, img.getLargeKey());
         audit.record(admin, "PRODUCT_IMAGE_REMOVED", "Product", productId, null);
         return view(p);
     }

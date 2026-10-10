@@ -51,8 +51,9 @@ public final class AffiliateResearchAnalyzer {
                                      List<String> platforms) {
     }
 
-    public record PlatformFit(String id, String name, String program, String region, String joinUrl,
-                              int fitScore, String reason, boolean merchantConnected, List<String> strengths) {
+    public record PlatformFit(String id, String name, String program, String access, String region, String joinUrl,
+                              String requirement, int fitScore, String reason, boolean merchantConnected,
+                              List<String> strengths) {
     }
 
     public record Report(String storefront, String niche, int opportunityScore, String grade,
@@ -94,9 +95,6 @@ public final class AffiliateResearchAnalyzer {
         int max = Math.clamp(req.maxPerCategory() <= 0 ? 4 : req.maxPerCategory(), 1, 8);
 
         List<Signal> signals = extractSignals(niche, notes, tokens);
-        Map<String, Platform> platformById = AffiliatePlatformCatalog.platforms().stream()
-                .collect(Collectors.toMap(Platform::id, p -> p, (a, b) -> a, LinkedHashMap::new));
-
         Set<String> existingNorm = catalog.productTitles().stream()
                 .map(AffiliateResearchAnalyzer::normKey).collect(Collectors.toCollection(HashSet::new));
 
@@ -133,7 +131,7 @@ public final class AffiliateResearchAnalyzer {
         }
         categories.sort(Comparator.comparingInt(CategorySuggestion::opportunityScore).reversed());
 
-        List<PlatformFit> platforms = scorePlatforms(req.storefront(), platformById, platformHits,
+        List<PlatformFit> platforms = scorePlatforms(req.storefront(), platformHits,
                 catalog.connectedMerchantHosts(), corpus, tokens);
         int opportunity = categories.isEmpty() ? 40
                 : (int) Math.round(categories.stream().limit(4).mapToInt(CategorySuggestion::opportunityScore).average().orElse(40));
@@ -147,7 +145,7 @@ public final class AffiliateResearchAnalyzer {
                 grade(opportunity), summary, signals, platforms, categories, next, actions, ms);
     }
 
-    private static List<PlatformFit> scorePlatforms(Storefront sf, Map<String, Platform> byId,
+    private static List<PlatformFit> scorePlatforms(Storefront sf,
                                                     Map<String, Integer> hits, List<String> connectedHosts,
                                                     String corpus, Set<String> tokens) {
         Set<String> hosts = connectedHosts.stream().map(h -> h == null ? "" : h.toLowerCase(Locale.ROOT))
@@ -156,28 +154,17 @@ public final class AffiliateResearchAnalyzer {
         for (Platform p : AffiliatePlatformCatalog.platforms()) {
             if (!p.storefronts().contains(sf)) continue;
             int base = 45 + Math.min(35, hits.getOrDefault(p.id(), 0));
-            boolean connected = hosts.stream().anyMatch(h -> h.contains(p.id().replace("-", ""))
-                    || p.name().toLowerCase(Locale.ROOT).contains(h)
-                    || h.contains(p.name().toLowerCase(Locale.ROOT).split("\\s+")[0]));
-            // Host heuristics for common merchants
-            if (!connected) {
-                connected = hosts.stream().anyMatch(h ->
-                        (p.id().equals("amazon-in") && h.contains("amazon"))
-                                || (p.id().equals("flipkart") && h.contains("flipkart"))
-                                || (p.id().equals("myntra") && h.contains("myntra"))
-                                || (p.id().equals("nykaa") && h.contains("nykaa"))
-                                || (p.id().equals("ajio") && h.contains("ajio"))
-                                || (p.id().equals("croma") && h.contains("croma")));
-            }
+            boolean connected = hosts.stream().anyMatch(h -> p.merchantHosts().stream()
+                    .anyMatch(m -> h.equals(m) || h.endsWith("." + m)));
             if (connected) base += 12;
             if (p.region().equals("IN") && (corpus.contains("india") || tokens.contains("india"))) base += 5;
             if (p.region().equals("GLOBAL") && sf == Storefront.DIGITAL) base += 5;
             base = Math.clamp(base, 0, 100);
             String reason = connected
-                    ? "You already have a connected merchant domain that matches this program."
-                    : "Affiliate-capable platform for " + sf.path() + " — join before publishing partner links.";
-            out.add(new PlatformFit(p.id(), p.name(), p.program(), p.region(), p.joinUrl(), base, reason,
-                    connected, p.strengths()));
+                    ? "You already have an approved merchant domain for this program."
+                    : "Join before publishing partner links. " + p.requirement();
+            out.add(new PlatformFit(p.id(), p.name(), p.program(), p.access().name(), p.region(), p.joinUrl(),
+                    p.requirement(), base, reason, connected, p.strengths()));
         }
         out.sort(Comparator.comparingInt(PlatformFit::fitScore).reversed());
         return out;
@@ -369,7 +356,8 @@ public final class AffiliateResearchAnalyzer {
                 : "Scores are boosted from the research notes you pasted.";
         return "Opportunity " + score + "/100 for " + focus + ". Lead with " + topCat
                 + " via " + topPlat + ". " + notesBit
-                + " Only platforms with affiliate programs are listed — buy links stay partner-side.";
+                + " Only platforms with an affiliate program (checked " + AffiliatePlatformCatalog.VERIFIED_ON
+                + ") are listed. Product ideas come from a built-in playbook, ranked by your notes — not live Google data.";
     }
 
     private static String grade(int score) {

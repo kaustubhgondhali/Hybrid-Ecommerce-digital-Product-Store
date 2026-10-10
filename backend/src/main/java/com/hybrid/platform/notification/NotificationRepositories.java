@@ -51,6 +51,9 @@ public final class NotificationRepositories {
 
         long countByStatus(NotificationLog.Status status);
 
+        boolean existsByStorefrontAndRecipientAndKindAndSubjectAndCreatedAtAfter(Storefront storefront, String recipient,
+                                                                                   String kind, String subject, Instant after);
+
         long countByStorefrontAndStatus(Storefront storefront, NotificationLog.Status status);
     }
 }

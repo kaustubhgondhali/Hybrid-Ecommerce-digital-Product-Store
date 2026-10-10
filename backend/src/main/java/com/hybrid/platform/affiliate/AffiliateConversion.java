@@ -11,7 +11,7 @@ public class AffiliateConversion {
 
     public enum Status { PENDING, APPROVED, REVERSED, PAID }
 
-    public enum Source { IMPORT, MANUAL }
+    public enum Source { IMPORT, MANUAL, POSTBACK }
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

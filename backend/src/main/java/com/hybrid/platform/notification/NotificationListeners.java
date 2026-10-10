@@ -1,9 +1,12 @@
 package com.hybrid.platform.notification;
 
+import com.hybrid.platform.affiliate.AffiliateEvents;
+import com.hybrid.platform.commerce.cart.CartRepository;
 import com.hybrid.platform.common.AppProperties;
 import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.commerce.order.OrderEvents;
 import com.hybrid.platform.identity.IdentityEvents;
+import com.hybrid.platform.notification.NotificationRepositories.NotificationLogRepository;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -11,18 +14,52 @@ import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Locale;
 
 /** Emails are sent only after the business transaction commits, on a background thread. */
 @Component
 public class NotificationListeners {
 
+    static final int PRICE_DROP_MAX_RECIPIENTS = 500;
+    static final Duration PRICE_DROP_COOLDOWN = Duration.ofDays(7);
+
     private final MailService mail;
     private final AppProperties props;
+    private final CartRepository carts;
+    private final NotificationLogRepository logs;
 
-    public NotificationListeners(MailService mail, AppProperties props) {
+    public NotificationListeners(MailService mail, AppProperties props, CartRepository carts, NotificationLogRepository logs) {
         this.mail = mail;
         this.props = props;
+        this.carts = carts;
+        this.logs = logs;
+    }
+
+    @Async
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+    public void onAffiliatePriceDropped(AffiliateEvents.PriceDropped e) {
+        String subject = "Price drop: " + e.productTitle();
+        if (subject.length() > 250) subject = subject.substring(0, 247) + "...";
+        Instant since = Instant.now().minus(PRICE_DROP_COOLDOWN);
+        String link = base() + "/" + e.storefront().path() + "/cart";
+        int sent = 0;
+        for (CartRepository.SavedBy c : carts.customersWithProduct(e.storefront().name(), e.productId())) {
+            if (sent >= PRICE_DROP_MAX_RECIPIENTS) break;
+            if (logs.existsByStorefrontAndRecipientAndKindAndSubjectAndCreatedAtAfter(e.storefront(), c.getEmail(),
+                    "PRICE_DROP", subject, since)) {
+                continue;
+            }
+            mail.send(e.storefront(), c.getEmail(), subject,
+                    "Hi " + c.getFullName() + ",\n\nGood news: " + e.productTitle() + ", which you saved in your cart, dropped from "
+                            + money(e.oldPriceMinor(), "INR") + " to " + money(e.newPriceMinor(), "INR") + " at "
+                            + e.merchantName() + ".\n\nPartner prices change often, so check the final price on "
+                            + e.merchantName() + " before you buy:\n" + link
+                            + "\n\nYou get these alerts because the item is in your cart. Remove it from your cart to stop them.",
+                    "PRICE_DROP");
+            sent++;
+        }
     }
 
     @Async

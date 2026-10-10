@@ -20,6 +20,9 @@ public class ProductImage {
     @Column(name = "thumb_key")
     private String thumbKey;
 
+    @Column(name = "large_key")
+    private String largeKey;
+
     private Integer width;
 
     private Integer height;
@@ -52,8 +55,14 @@ public class ProductImage {
         return thumbKey == null ? url() : "/media/" + thumbKey;
     }
 
-    public void setRenditions(String thumbKey, Integer width, Integer height) {
+    /** Product-page size (max 1200 px wide); falls back to the original when it is already small or predates renditions. */
+    public String largeUrl() {
+        return largeKey == null ? url() : "/media/" + largeKey;
+    }
+
+    public void setRenditions(String thumbKey, String largeKey, Integer width, Integer height) {
         this.thumbKey = thumbKey;
+        this.largeKey = largeKey;
         this.width = width;
         this.height = height;
     }
@@ -62,6 +71,7 @@ public class ProductImage {
     public Product getProduct() { return product; }
     public String getStorageKey() { return storageKey; }
     public String getThumbKey() { return thumbKey; }
+    public String getLargeKey() { return largeKey; }
     public Integer getWidth() { return width; }
     public Integer getHeight() { return height; }
     public String getAltText() { return altText; }

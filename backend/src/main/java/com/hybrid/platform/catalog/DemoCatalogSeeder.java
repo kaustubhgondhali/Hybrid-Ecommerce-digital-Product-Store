@@ -184,8 +184,8 @@ public class DemoCatalogSeeder {
             FileStorage.StoredFile stored = storage.store(FileStorage.Area.PUBLIC, new ByteArrayInputStream(png), "png",
                     png.length + 1L);
             ProductImage image = new ProductImage(stored.key(), title + " — demo placeholder", 0);
-            ImageOptimizer.Result thumb = images.thumbnail(stored.key());
-            image.setRenditions(thumb.thumbKey(), thumb.width(), thumb.height());
+            ImageOptimizer.Result r = images.renditions(stored.key());
+            image.setRenditions(r.thumbKey(), r.largeKey(), r.width(), r.height());
             p.addImage(image);
         } catch (IOException e) {
             throw new IllegalStateException("Could not create demo product image for " + p.getSlug(), e);

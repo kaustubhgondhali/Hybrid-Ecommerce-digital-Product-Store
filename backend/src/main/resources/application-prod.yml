@@ -14,6 +14,8 @@ spring:
 app:
   mail:
     log-unsent-emails: false
+  # Never seed [Demo] products in production unless explicitly asked for.
+  demo-catalog: ${DEMO_CATALOG:false}
 
 logging:
   level:

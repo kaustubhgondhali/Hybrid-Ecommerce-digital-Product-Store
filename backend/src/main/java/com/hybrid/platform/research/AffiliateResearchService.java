@@ -9,23 +9,19 @@ import com.hybrid.platform.catalog.Product;
 import com.hybrid.platform.catalog.ProductRepository;
 import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.common.error.ApiException;
-import com.hybrid.platform.research.AffiliatePlatformCatalog.CategoryPlaybook;
-import com.hybrid.platform.research.AffiliatePlatformCatalog.Platform;
 import com.hybrid.platform.research.AffiliateResearchAnalyzer.CatalogSnapshot;
 import com.hybrid.platform.research.AffiliateResearchAnalyzer.Report;
 import com.hybrid.platform.research.AffiliateResearchAnalyzer.Request;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 @Service
 public class AffiliateResearchService {
 
-    public record PlatformCard(String id, String name, String program, String region, String joinUrl,
-                               List<String> strengths, List<String> storefronts) {
+    public record PlatformCard(String id, String name, String program, String access, String region, String joinUrl,
+                               String requirement, List<String> strengths, List<String> storefronts) {
     }
 
     public record CategoryCard(String id, String name, String blurb) {
@@ -53,8 +49,8 @@ public class AffiliateResearchService {
     public Meta meta(Storefront sf) {
         List<PlatformCard> platforms = AffiliatePlatformCatalog.platforms().stream()
                 .filter(p -> p.storefronts().contains(sf))
-                .map(p -> new PlatformCard(p.id(), p.name(), p.program(), p.region(), p.joinUrl(),
-                        p.strengths(), p.storefronts().stream().map(Storefront::path).toList()))
+                .map(p -> new PlatformCard(p.id(), p.name(), p.program(), p.access().name(), p.region(), p.joinUrl(),
+                        p.requirement(), p.strengths(), p.storefronts().stream().map(Storefront::path).toList()))
                 .toList();
         List<CategoryCard> cats = AffiliatePlatformCatalog.playbooks(sf).stream()
                 .map(b -> new CategoryCard(b.id(), b.name(), b.blurb()))
@@ -62,9 +58,10 @@ public class AffiliateResearchService {
         long catalogCount = products.findByStorefrontAndStatusNotOrderByUpdatedAtDesc(sf, ProductStatus.ARCHIVED).size();
         int merchantCount = (int) merchants.findByStorefrontOrderByNameAsc(sf).stream().filter(AffiliateMerchant::isActive).count();
         return new Meta(sf.path(),
-                "Paste Google reviews, roundups, or forum notes. We score them against affiliate-ready platforms only "
-                        + "and suggest products by category plus the Google searches you should run next. "
-                        + "Nothing is scraped from Google — analysis is instant and stays on your server.",
+                "Paste Google reviews, roundups, or forum notes you collected. The tool ranks a built-in playbook of "
+                        + "product ideas against your notes and catalog, lists only platforms with a real affiliate program "
+                        + "(checked " + AffiliatePlatformCatalog.VERIFIED_ON + "), and suggests the Google searches to run next. "
+                        + "It does not fetch Google results itself, so it is instant and nothing leaves your server.",
                 platforms, cats, (int) catalogCount, merchantCount);
     }
 
@@ -81,10 +78,6 @@ public class AffiliateResearchService {
         if (notes.length() > 20_000) {
             throw ApiException.badRequest("NOTES_TOO_LONG", "Keep research notes under 20,000 characters");
         }
-        if (niche.isEmpty() && notes.isEmpty() && (body.categoryFocus() == null || body.categoryFocus().isEmpty())) {
-            // Still allowed — returns default playbook ranking for the storefront
-        }
-
         List<Product> catalog = products.findByStorefrontAndStatusNotOrderByUpdatedAtDesc(sf, ProductStatus.ARCHIVED);
         List<String> titles = catalog.stream().map(Product::getTitle).toList();
         List<String> catNames = categories.findByStorefrontOrderBySortOrderAscNameAsc(sf).stream()
@@ -99,14 +92,5 @@ public class AffiliateResearchService {
                 body.categoryFocus() == null ? List.of() : body.categoryFocus(),
                 body.maxPerCategory() == null ? 4 : body.maxPerCategory());
         return AffiliateResearchAnalyzer.analyze(req, new CatalogSnapshot(titles, catNames, hosts));
-    }
-
-    /** Lightweight map for admin diagnostics / tests. */
-    Map<String, Object> playbookSummary(Storefront sf) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("platforms", AffiliatePlatformCatalog.platforms().stream()
-                .filter(p -> p.storefronts().contains(sf)).map(Platform::id).toList());
-        m.put("categories", AffiliatePlatformCatalog.playbooks(sf).stream().map(CategoryPlaybook::id).toList());
-        return m;
     }
 }
