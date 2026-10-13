@@ -23,7 +23,8 @@ public class CustomerAuthController {
     public record RegisterRequest(@NotBlank @Email @Size(max = 254) String email,
                                   @NotBlank @Size(max = 128) String password,
                                   @NotBlank @Size(max = 120) String fullName,
-                                  String storefront) {
+                                  String storefront,
+                                  Boolean marketingOptIn) {
     }
 
     public record LoginRequest(@NotBlank String email, @NotBlank String password) {
@@ -61,7 +62,8 @@ public class CustomerAuthController {
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
     public Me register(@Valid @RequestBody RegisterRequest req, HttpServletRequest http) {
-        CustomerPrincipal p = service.register(req.email(), req.password(), req.fullName(), storefrontHint(req.storefront()));
+        CustomerPrincipal p = service.register(req.email(), req.password(), req.fullName(), storefrontHint(req.storefront()),
+                Boolean.TRUE.equals(req.marketingOptIn()));
         sessionAuth.loginCustomer(http, p);
         return Me.of(service.get(p.id()));
     }

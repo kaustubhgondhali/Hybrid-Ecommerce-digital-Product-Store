@@ -13,4 +13,8 @@ public final class IdentityEvents {
 
     public record PasswordResetRequested(String email, String fullName, String resetToken, Storefront storefront) {
     }
+
+    /** The customer ticked "email me offers" while signing up on this storefront. */
+    public record MarketingOptedIn(Long customerId, Storefront storefront) {
+    }
 }

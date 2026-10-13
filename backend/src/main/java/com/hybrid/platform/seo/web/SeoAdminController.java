@@ -71,7 +71,8 @@ public class SeoAdminController {
         catalog.update(admin, id, new CatalogAdminService.ProductInput(null, null, null, req.slug(), null, null, null,
                 null, null, null, null, null, null, null, req.metaTitle() == null ? "" : req.metaTitle(),
                 req.metaDescription() == null ? "" : req.metaDescription(),
-                req.focusKeyword() == null ? "" : req.focusKeyword(), req.noindex(), null, null), null);
+                req.focusKeyword() == null ? "" : req.focusKeyword(), req.noindex(), null, null,
+                null, null, null, null, null, null), null);
         return seo.product(admin.storefront(), id, null);
     }
 

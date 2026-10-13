@@ -83,6 +83,22 @@ public class StoreSettings {
     @Column(name = "delivery_estimate")
     private String deliveryEstimate;
 
+    /** WhatsApp number for the chat button, digits only with country code (e.g. 919876543210). */
+    @Column(name = "whatsapp_number")
+    private String whatsappNumber;
+
+    @Column(name = "ga4_id")
+    private String ga4Id;
+
+    @Column(name = "meta_pixel_id")
+    private String metaPixelId;
+
+    @Column(name = "deal_of_day_product_id")
+    private Long dealOfDayProductId;
+
+    @Column(name = "deal_of_day_ends_at")
+    private Instant dealOfDayEndsAt;
+
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
@@ -147,6 +163,15 @@ public class StoreSettings {
     public void setPincodeList(String pincodeList) { this.pincodeList = pincodeList; }
     public String getCodPincodeList() { return codPincodeList; }
     public void setCodPincodeList(String codPincodeList) { this.codPincodeList = codPincodeList; }
+    public String getWhatsappNumber() { return whatsappNumber; }
+    public void setWhatsappNumber(String whatsappNumber) { this.whatsappNumber = whatsappNumber; }
+    public String getGa4Id() { return ga4Id; }
+    public void setGa4Id(String ga4Id) { this.ga4Id = ga4Id; }
+    public String getMetaPixelId() { return metaPixelId; }
+    public void setMetaPixelId(String metaPixelId) { this.metaPixelId = metaPixelId; }
+    public Long getDealOfDayProductId() { return dealOfDayProductId; }
+    public Instant getDealOfDayEndsAt() { return dealOfDayEndsAt; }
+    public void setDealOfDay(Long productId, Instant endsAt) { this.dealOfDayProductId = productId; this.dealOfDayEndsAt = endsAt; }
     public String getDeliveryEstimate() { return deliveryEstimate; }
     public void setDeliveryEstimate(String deliveryEstimate) { this.deliveryEstimate = deliveryEstimate; }
     public Instant getUpdatedAt() { return updatedAt; }

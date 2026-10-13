@@ -17,13 +17,19 @@ import java.util.List;
 @RequestMapping("/api/{storefront}/admin")
 public class AffiliateAdminController {
 
-    public record SetLinkRequest(@NotBlank @Size(max = 2048) String url, Long displayPriceMinor,
+    public record SetLinkRequest(@NotBlank @Size(max = 2048) String url, Long displayPriceMinor, Long listPriceMinor,
                                  @Size(max = 500) String disclosure, @Size(max = 120) String merchantName,
                                  boolean confirmNewDomain) {
+        AffiliateService.SetLinkCommand toCommand() {
+            return new AffiliateService.SetLinkCommand(url, displayPriceMinor, listPriceMinor, disclosure, merchantName, confirmNewDomain);
+        }
+    }
+
+    public record ActiveRequest(boolean active) {
     }
 
     public record MerchantUpdate(@Size(max = 120) String name, @Size(max = 40) String subIdParam, Boolean allowHttp,
-                                 Boolean active) {
+                                 Boolean active, Boolean hidePrices) {
     }
 
     public record ConversionUpdate(AffiliateConversion.Status status, @Size(max = 300) String note) {
@@ -42,15 +48,51 @@ public class AffiliateAdminController {
     @PreAuthorize("hasAuthority('PERM_AFFILIATE_WRITE')")
     public AffiliateService.LinkView setLink(@PathVariable String storefront, @PathVariable Long productId,
                                              @Valid @RequestBody SetLinkRequest req) {
-        return service.setLink(CurrentUser.admin(Storefront.fromPath(storefront)), productId,
-                new AffiliateService.SetLinkCommand(req.url(), req.displayPriceMinor(), req.disclosure(),
-                        req.merchantName(), req.confirmNewDomain()));
+        return service.setLink(CurrentUser.admin(Storefront.fromPath(storefront)), productId, req.toCommand());
     }
 
     @PostMapping("/products/{productId}/affiliate-link/confirm-price")
     @PreAuthorize("hasAuthority('PERM_AFFILIATE_WRITE')")
     public AffiliateService.LinkView confirmPrice(@PathVariable String storefront, @PathVariable Long productId) {
         return service.confirmPrice(CurrentUser.admin(Storefront.fromPath(storefront)), productId);
+    }
+
+    // ---- several partner stores per product
+
+    @GetMapping("/products/{productId}/affiliate-links")
+    @PreAuthorize("hasAuthority('PERM_AFFILIATE_READ')")
+    public List<AffiliateService.LinkView> productLinks(@PathVariable String storefront, @PathVariable Long productId) {
+        Storefront sf = Storefront.fromPath(storefront);
+        CurrentUser.admin(sf);
+        return service.adminLinks(sf, productId);
+    }
+
+    @PostMapping("/products/{productId}/affiliate-links")
+    @PreAuthorize("hasAuthority('PERM_AFFILIATE_WRITE')")
+    public AffiliateService.LinkView addLink(@PathVariable String storefront, @PathVariable Long productId,
+                                             @Valid @RequestBody SetLinkRequest req) {
+        return service.setLink(CurrentUser.admin(Storefront.fromPath(storefront)), productId, req.toCommand());
+    }
+
+    @PutMapping("/products/{productId}/affiliate-links/{linkId}")
+    @PreAuthorize("hasAuthority('PERM_AFFILIATE_WRITE')")
+    public AffiliateService.LinkView updateLink(@PathVariable String storefront, @PathVariable Long productId,
+                                                @PathVariable Long linkId, @Valid @RequestBody SetLinkRequest req) {
+        return service.updateLink(CurrentUser.admin(Storefront.fromPath(storefront)), productId, linkId, req.toCommand());
+    }
+
+    @PatchMapping("/products/{productId}/affiliate-links/{linkId}")
+    @PreAuthorize("hasAuthority('PERM_AFFILIATE_WRITE')")
+    public AffiliateService.LinkView setLinkActive(@PathVariable String storefront, @PathVariable Long productId,
+                                                   @PathVariable Long linkId, @RequestBody ActiveRequest req) {
+        return service.setLinkActive(CurrentUser.admin(Storefront.fromPath(storefront)), productId, linkId, req.active());
+    }
+
+    @PostMapping("/products/{productId}/affiliate-links/{linkId}/confirm-price")
+    @PreAuthorize("hasAuthority('PERM_AFFILIATE_WRITE')")
+    public AffiliateService.LinkView confirmLinkPrice(@PathVariable String storefront, @PathVariable Long productId,
+                                                      @PathVariable Long linkId) {
+        return service.confirmPrice(CurrentUser.admin(Storefront.fromPath(storefront)), productId, linkId);
     }
 
     @GetMapping("/affiliate/links")
@@ -74,7 +116,7 @@ public class AffiliateAdminController {
     public AffiliateService.MerchantView updateMerchant(@PathVariable String storefront, @PathVariable Long id,
                                                         @Valid @RequestBody MerchantUpdate req) {
         return service.updateMerchant(CurrentUser.admin(Storefront.fromPath(storefront)), id, req.name(),
-                req.subIdParam(), req.allowHttp(), req.active());
+                req.subIdParam(), req.allowHttp(), req.active(), req.hidePrices());
     }
 
     @GetMapping("/affiliate/conversions")

@@ -56,6 +56,28 @@ public class SeoPageController {
         return render("store/product.html", s, pages.product(s, slug), request);
     }
 
+    @GetMapping({"/{sf:shop|digital}/offers", "/{sf:shop|digital}/offers/"})
+    public ResponseEntity<String> offers(@PathVariable String sf) {
+        return ok("store/page.html", pages.offersPage(Storefront.fromPath(sf)));
+    }
+
+    @GetMapping("/{sf:shop|digital}/store/{domain:.+}")
+    public ResponseEntity<String> store(@PathVariable String sf, @PathVariable String domain, HttpServletRequest request) {
+        Storefront s = Storefront.fromPath(sf);
+        return render("store/index.html", s, pages.storePage(s, domain), request);
+    }
+
+    @GetMapping({"/{sf:shop|digital}/guides", "/{sf:shop|digital}/guides/"})
+    public ResponseEntity<String> guides(@PathVariable String sf) {
+        return ok("store/page.html", pages.guidesIndex(Storefront.fromPath(sf)));
+    }
+
+    @GetMapping("/{sf:shop|digital}/guides/{slug}")
+    public ResponseEntity<String> guide(@PathVariable String sf, @PathVariable String slug, HttpServletRequest request) {
+        Storefront s = Storefront.fromPath(sf);
+        return render("store/page.html", s, pages.guide(s, slug), request);
+    }
+
     @GetMapping("/{sf:shop|digital}/page/{slug}")
     public ResponseEntity<String> content(@PathVariable String sf, @PathVariable String slug, HttpServletRequest request) {
         Storefront s = Storefront.fromPath(sf);

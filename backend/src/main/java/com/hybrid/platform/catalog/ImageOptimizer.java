@@ -76,7 +76,7 @@ public class ImageOptimizer {
     }
 
     /** Halves the image repeatedly then does a final bicubic step; keeps quality close to area averaging. */
-    static BufferedImage resize(BufferedImage src, int targetW, int targetH, boolean alpha) {
+    public static BufferedImage resize(BufferedImage src, int targetW, int targetH, boolean alpha) {
         BufferedImage current = src;
         int w = src.getWidth();
         int h = src.getHeight();
@@ -107,7 +107,7 @@ public class ImageOptimizer {
         return out;
     }
 
-    private static byte[] jpeg(BufferedImage img, float quality) throws IOException {
+    public static byte[] jpeg(BufferedImage img, float quality) throws IOException {
         ImageWriter writer = ImageIO.getImageWritersByFormatName("jpeg").next();
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ImageOutputStream out = ImageIO.createImageOutputStream(bytes)) {

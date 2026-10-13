@@ -26,7 +26,7 @@ public final class AffiliateRepositories {
     }
 
     public interface LinkRepository extends JpaRepository<AffiliateLink, Long> {
-        Optional<AffiliateLink> findByProductId(Long productId);
+        List<AffiliateLink> findByProductIdOrderByIdAsc(Long productId);
 
         List<AffiliateLink> findByProductIdIn(Collection<Long> productIds);
 
@@ -47,6 +47,24 @@ public final class AffiliateRepositories {
         long countSince(@Param("sf") Storefront sf, @Param("since") Instant since);
 
         Optional<AffiliateClick> findByClickRef(String clickRef);
+
+        /** Products ranked by real (non-bot) partner clicks since {@code since}. */
+        @Query("select c.productId, count(c) from AffiliateClick c where c.storefront = :sf and c.createdAt >= :since "
+                + "and c.suspectedBot = false group by c.productId order by count(c) desc")
+        List<Object[]> topProductsSince(@Param("sf") Storefront sf, @Param("since") Instant since, Pageable page);
+
+        @Query("select count(c) from AffiliateClick c where c.productId = :productId and c.createdAt >= :since "
+                + "and c.suspectedBot = false")
+        long countForProductSince(@Param("productId") Long productId, @Param("since") Instant since);
+    }
+
+    public interface PricePointRepository extends JpaRepository<AffiliatePricePoint, Long> {
+        List<AffiliatePricePoint> findByProductIdInAndRecordedAtAfterOrderByRecordedAtAsc(Collection<Long> productIds, Instant since);
+
+        /** Full history of every link that changed price since {@code since}, oldest first, to find the drops. */
+        @Query("select p from AffiliatePricePoint p where p.linkId in (select q.linkId from AffiliatePricePoint q "
+                + "where q.storefront = :sf and q.recordedAt >= :since) order by p.linkId, p.recordedAt, p.id")
+        List<AffiliatePricePoint> historyOfLinksChangedSince(@Param("sf") Storefront sf, @Param("since") Instant since);
     }
 
     public interface ConversionRepository extends JpaRepository<AffiliateConversion, Long> {

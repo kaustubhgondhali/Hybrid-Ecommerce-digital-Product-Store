@@ -35,14 +35,22 @@ import java.util.*;
 public class CatalogAdminService {
 
     private static final long MAX_IMAGE_BYTES = 5L * 1024 * 1024;
+    static final long MAX_VIDEO_BYTES = 100L * 1024 * 1024;
+    static final int MAX_VIDEOS = 3;
 
     public record ProductInput(ProductType productType, SellingMethod sellingMethod, String title, String slug,
                                String summary, String description, String brand, Long categoryId,
                                String digitalFormat, DeliveryKind deliveryKind,
                                Long priceMinor, Long compareAtMinor, String sku, Integer weightGrams,
                                String metaTitle, String metaDescription, String focusKeyword, Boolean noindex,
-                               String hsnSac, Integer gstRateBps) {
+                               String hsnSac, Integer gstRateBps,
+                               String highlights, String pros, String cons, String verdict, Integer expertRating,
+                               String specs) {
     }
+
+    /** Deal content limits: one item per line. */
+    static final int MAX_LIST_ITEMS = 8;
+    static final int MAX_ITEM_LENGTH = 160;
 
     public record VariantInput(String name, String sku, Long priceMinor, Long compareAtMinor, Integer weightGrams,
                                Boolean active, Integer sortOrder) {
@@ -55,6 +63,10 @@ public class CatalogAdminService {
     public record AdminImageView(Long id, String url, String thumbUrl, String alt) {
     }
 
+    public record AdminVideoView(Long id, String url, String posterUrl, String title, Integer durationSeconds,
+                                 Integer width, Integer height, long sizeBytes) {
+    }
+
     public record AdminProductSummary(Long id, String title, String slug, String productType, String sellingMethod,
                                       String status, String imageUrl, Long priceMinor, Instant updatedAt) {
     }
@@ -63,10 +75,13 @@ public class CatalogAdminService {
                                    String title, String slug, String summary, String description, String brand,
                                    Long categoryId, String digitalFormat, String deliveryKind, boolean typeLocked,
                                    Instant publishedAt, Instant updatedAt, long version,
-                                   List<AdminVariantView> variants, List<AdminImageView> images,
-                                   AffiliateService.LinkView affiliateLink, List<String> publishProblems,
+                                   List<AdminVariantView> variants, List<AdminImageView> images, List<AdminVideoView> videos,
+                                   AffiliateService.LinkView affiliateLink, List<AffiliateService.LinkView> affiliateLinks,
+                                   List<String> publishProblems,
                                    String metaTitle, String metaDescription, String focusKeyword, boolean noindex,
-                                   String hsnSac, Integer gstRateBps) {
+                                   String hsnSac, Integer gstRateBps,
+                                   String highlights, String pros, String cons, String verdict, Integer expertRating,
+                                   String specs) {
     }
 
     public record CategoryInput(String name, String slug, Integer sortOrder, Boolean active, String description,
@@ -88,11 +103,14 @@ public class CatalogAdminService {
     private final SeoRedirectService redirects;
     private final AuditService audit;
     private final AppProperties props;
+    private final org.springframework.context.ApplicationEventPublisher events;
 
     public CatalogAdminService(ProductRepository products, ProductVariantRepository variants,
                                CategoryRepository categories, InventoryService inventory, AffiliateService affiliate,
                                DeliveryReadinessService delivery, FileStorage storage, ImageOptimizer images,
-                               SeoRedirectService redirects, AuditService audit, AppProperties props) {
+                               SeoRedirectService redirects, AuditService audit, AppProperties props,
+                               org.springframework.context.ApplicationEventPublisher events) {
+        this.events = events;
         this.products = products;
         this.variants = variants;
         this.categories = categories;
@@ -205,7 +223,10 @@ public class CatalogAdminService {
                     "This product is not ready to publish", Map.of("problems", problems));
         }
         p.setStatus(ProductStatus.PUBLISHED);
-        if (p.getPublishedAt() == null) p.setPublishedAt(Instant.now());
+        if (p.getPublishedAt() == null) {
+            p.setPublishedAt(Instant.now());
+            events.publishEvent(new CatalogEvents.ProductPublished(p.getStorefront(), p.getId(), p.getSlug(), p.getTitle()));
+        }
         audit.record(admin, "PRODUCT_PUBLISHED", "Product", id, null);
         return view(p);
     }
@@ -328,6 +349,97 @@ public class CatalogAdminService {
         return view(p);
     }
 
+    /** Moves an image to the front: the first image is the one shown on product cards, in search and when shared. */
+    @Transactional
+    public AdminProductView makeMainImage(AdminPrincipal admin, Long productId, Long imageId) {
+        Product p = require(admin.storefront(), productId);
+        ProductImage main = p.getImages().stream().filter(i -> i.getId().equals(imageId)).findFirst()
+                .orElseThrow(() -> ApiException.notFound("IMAGE_NOT_FOUND", "Image not found"));
+        List<ProductImage> ordered = new ArrayList<>(p.getImages());
+        ordered.remove(main);
+        ordered.add(0, main);
+        for (int i = 0; i < ordered.size(); i++) ordered.get(i).setSortOrder(i);
+        p.getImages().sort(Comparator.comparingInt(ProductImage::getSortOrder));
+        audit.record(admin, "PRODUCT_IMAGE_MAIN", "Product", productId, String.valueOf(imageId));
+        return view(p);
+    }
+
+    // ------------------------------------------------------------------ videos
+
+    /**
+     * Adds a short video (MP4 or WebM, checked by its content) to the product gallery. The poster frame, duration and
+     * size are measured by the admin's browser; they are only used for display and search results.
+     */
+    @Transactional
+    public AdminProductView uploadVideo(AdminPrincipal admin, Long productId, MultipartFile file, MultipartFile poster,
+                                        String title, Integer durationSeconds, Integer width, Integer height) throws IOException {
+        Product p = require(admin.storefront(), productId);
+        if (file == null || file.isEmpty()) {
+            throw ApiException.badRequest("FILE_REQUIRED", "Choose a video to upload");
+        }
+        if (file.getSize() > MAX_VIDEO_BYTES) {
+            throw ApiException.rule("FILE_TOO_LARGE", "Videos must be 100 MB or smaller");
+        }
+        if (p.getVideos().size() >= MAX_VIDEOS) {
+            throw ApiException.rule("TOO_MANY_VIDEOS", "A product can have at most " + MAX_VIDEOS + " videos");
+        }
+        String posterKey = null;
+        if (poster != null && !poster.isEmpty()) {
+            if (poster.getSize() > MAX_IMAGE_BYTES) {
+                throw ApiException.rule("FILE_TOO_LARGE", "The poster image must be 5 MB or smaller");
+            }
+            try (InputStream in = poster.getInputStream()) {
+                byte[] header = in.readNBytes(16);
+                String ext = FileTypes.requireImage(header);
+                posterKey = storage.store(FileStorage.Area.PUBLIC, new SequenceInputStream(new ByteArrayInputStream(header), in),
+                        ext, MAX_IMAGE_BYTES).key();
+            }
+        }
+        try (InputStream in = file.getInputStream()) {
+            byte[] header = in.readNBytes(16);
+            String ext = FileTypes.requireVideo(header);
+            FileStorage.StoredFile stored = storage.store(FileStorage.Area.PUBLIC,
+                    new SequenceInputStream(new ByteArrayInputStream(header), in), ext, MAX_VIDEO_BYTES);
+            p.addVideo(new ProductVideo(stored.key(), posterKey, title == null || title.isBlank() ? null : trimTo(title.strip(), 200),
+                    within(durationSeconds, 1, 36_000), within(width, 1, 10_000), within(height, 1, 10_000),
+                    stored.sizeBytes(), p.getVideos().size()));
+        } catch (RuntimeException | IOException e) {
+            if (posterKey != null) storage.delete(FileStorage.Area.PUBLIC, posterKey);
+            throw e;
+        }
+        audit.record(admin, "PRODUCT_VIDEO_ADDED", "Product", productId, null);
+        return view(products.saveAndFlush(p));
+    }
+
+    @Transactional
+    public AdminProductView updateVideoTitle(AdminPrincipal admin, Long productId, Long videoId, String title) {
+        Product p = require(admin.storefront(), productId);
+        ProductVideo v = video(p, videoId);
+        v.setTitle(title == null || title.isBlank() ? null : trimTo(title.strip(), 200));
+        audit.record(admin, "PRODUCT_VIDEO_UPDATED", "Product", productId, null);
+        return view(p);
+    }
+
+    @Transactional
+    public AdminProductView deleteVideo(AdminPrincipal admin, Long productId, Long videoId) {
+        Product p = require(admin.storefront(), productId);
+        ProductVideo v = video(p, videoId);
+        p.getVideos().remove(v);
+        storage.delete(FileStorage.Area.PUBLIC, v.getStorageKey());
+        if (v.getPosterKey() != null) storage.delete(FileStorage.Area.PUBLIC, v.getPosterKey());
+        audit.record(admin, "PRODUCT_VIDEO_REMOVED", "Product", productId, null);
+        return view(p);
+    }
+
+    private static ProductVideo video(Product p, Long videoId) {
+        return p.getVideos().stream().filter(v -> v.getId().equals(videoId)).findFirst()
+                .orElseThrow(() -> ApiException.notFound("VIDEO_NOT_FOUND", "Video not found"));
+    }
+
+    private static Integer within(Integer v, int min, int max) {
+        return v == null || v < min || v > max ? null : v;
+    }
+
     // ------------------------------------------------------------------ categories
 
     @Transactional(readOnly = true)
@@ -414,6 +526,20 @@ public class CatalogAdminService {
         if (in.summary() != null) p.setSummary(trimTo(in.summary(), 500));
         if (in.description() != null) p.setDescription(trimTo(in.description(), 20000));
         if (in.brand() != null) p.setBrand(trimTo(in.brand(), 120));
+        if (in.highlights() != null) p.setHighlights(lines(in.highlights(), "Highlights"));
+        if (in.pros() != null) p.setPros(lines(in.pros(), "Pros"));
+        if (in.cons() != null) p.setCons(lines(in.cons(), "Cons"));
+        if (in.verdict() != null) p.setVerdict(trimTo(in.verdict(), 600));
+        if (in.specs() != null) p.setSpecs(specs(in.specs()));
+        if (in.expertRating() != null) {
+            if (in.expertRating() <= 0) {
+                p.setExpertRating(null);
+            } else if (in.expertRating() < 10 || in.expertRating() > 50 || in.expertRating() % 5 != 0) {
+                throw ApiException.badRequest("INVALID_RATING", "Rating must be between 1 and 5 stars, in half stars");
+            } else {
+                p.setExpertRating(in.expertRating());
+            }
+        }
         if (in.categoryId() != null) {
             if (in.categoryId() <= 0) {
                 p.setCategoryId(null);
@@ -431,6 +557,42 @@ public class CatalogAdminService {
             p.setDigitalFormat(null);
             p.setDeliveryKind(null);
         }
+    }
+
+    /** Normalises a one-item-per-line list; null when empty. */
+    static final int MAX_SPECS = 30;
+
+    /** "Name: Value" lines (a leading bullet is ignored); at most 30, names up to 40 and values up to 160 characters. */
+    static String specs(String raw) {
+        List<String> out = new ArrayList<>();
+        for (String line : raw.lines().map(String::trim).map(s -> s.replaceFirst("^[-*\u2022]\\s*", "")).filter(s -> !s.isEmpty()).toList()) {
+            int colon = line.indexOf(':');
+            String name = colon < 0 ? "" : line.substring(0, colon).trim();
+            String value = colon < 0 ? "" : line.substring(colon + 1).trim();
+            if (name.isEmpty() || value.isEmpty()) {
+                throw ApiException.badRequest("INVALID_SPEC", "Specifications: write each line as \u201CName: Value\u201D (\u201C" + trimTo(line, 40) + "\u201D)");
+            }
+            if (name.length() > 40 || value.length() > 160) {
+                throw ApiException.badRequest("SPEC_TOO_LONG", "Specifications: keep names under 40 and values under 160 characters");
+            }
+            out.add(name + ": " + value);
+        }
+        if (out.size() > MAX_SPECS) {
+            throw ApiException.badRequest("TOO_MANY_LINES", "Specifications: at most " + MAX_SPECS + " lines");
+        }
+        return out.isEmpty() ? null : String.join("\n", out);
+    }
+
+    static String lines(String raw, String label) {
+        List<String> items = raw.lines().map(String::trim).map(s -> s.replaceFirst("^[-*•]\\s*", ""))
+                .filter(s -> !s.isEmpty()).toList();
+        if (items.size() > MAX_LIST_ITEMS) {
+            throw ApiException.badRequest("TOO_MANY_LINES", label + ": at most " + MAX_LIST_ITEMS + " lines");
+        }
+        if (items.stream().anyMatch(s -> s.length() > MAX_ITEM_LENGTH)) {
+            throw ApiException.badRequest("LINE_TOO_LONG", label + ": keep each line under " + MAX_ITEM_LENGTH + " characters");
+        }
+        return items.isEmpty() ? null : String.join("\n", items);
     }
 
     private SellingMethod requireAffiliateMethod(SellingMethod method) {
@@ -462,13 +624,18 @@ public class CatalogAdminService {
                 v.getPriceMinor(), v.getCompareAtMinor(), v.getWeightGrams(), v.isActive(), v.isDefaultVariant(),
                 p.isPhysicalDirect() ? stock.get(v.getId()) : null)).toList();
         List<AdminImageView> imgs = p.getImages().stream().map(i -> new AdminImageView(i.getId(), i.url(), i.thumbUrl(), i.getAltText())).toList();
-        AffiliateService.LinkView link = p.getSellingMethod() == SellingMethod.AFFILIATE
-                ? affiliate.adminLink(p.getStorefront(), p.getId()).orElse(null) : null;
+        List<AdminVideoView> vids = p.getVideos().stream().map(v -> new AdminVideoView(v.getId(), v.url(), v.posterUrl(),
+                v.getTitle(), v.getDurationSeconds(), v.getWidth(), v.getHeight(), v.getSizeBytes())).toList();
+        List<AffiliateService.LinkView> links = p.getSellingMethod() == SellingMethod.AFFILIATE && p.getId() != null
+                ? affiliate.adminLinks(p.getStorefront(), p.getId()) : List.of();
+        AffiliateService.LinkView link = links.stream().filter(AffiliateService.LinkView::active).findFirst()
+                .orElse(links.isEmpty() ? null : links.get(0));
         return new AdminProductView(p.getId(), p.getStorefront().name(), p.getProductType().name(), p.getSellingMethod().name(),
                 p.getStatus().name(), p.getTitle(), p.getSlug(), p.getSummary(), p.getDescription(), p.getBrand(),
                 p.getCategoryId(), p.getDigitalFormat(), p.getDeliveryKind() == null ? null : p.getDeliveryKind().name(),
-                p.isTypeLocked(), p.getPublishedAt(), p.getUpdatedAt(), p.getVersion(), vs, imgs, link, problems(p),
-                p.getMetaTitle(), p.getMetaDescription(), p.getFocusKeyword(), p.isNoindex(), p.getHsnSac(), p.getGstRateBps());
+                p.isTypeLocked(), p.getPublishedAt(), p.getUpdatedAt(), p.getVersion(), vs, imgs, vids, link, links, problems(p),
+                p.getMetaTitle(), p.getMetaDescription(), p.getFocusKeyword(), p.isNoindex(), p.getHsnSac(), p.getGstRateBps(),
+                p.getHighlights(), p.getPros(), p.getCons(), p.getVerdict(), p.getExpertRating(), p.getSpecs());
     }
 
     private static AdminCategoryView view(Category c) {
@@ -489,7 +656,7 @@ public class CatalogAdminService {
         }
     }
 
-    static String slugify(String value) {
+    public static String slugify(String value) {
         String s = Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFD).replaceAll("\\p{M}", "")
                 .toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("(^-+|-+$)", "");
         if (s.isEmpty()) s = "item";

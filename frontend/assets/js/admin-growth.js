@@ -462,10 +462,78 @@
   // ================================================================== reviews
 
   const reviewFilter = { status: 'PENDING', page: 0 };
+  const REVIEW_SOURCES = [['WHATSAPP', 'WhatsApp message'], ['EMAIL', 'Email'], ['PHONE', 'Phone call'],
+    ['IN_PERSON', 'In person'], ['OTHER', 'Other (e.g. social media message)']];
+
+  async function refreshReviewBadge() {
+    if (!can('CATALOG_READ')) return;
+    try {
+      K.navBadge('reviews', (await Api.get(API + '/reviews/pending-count')).pending);
+    } catch (e) { /* the badge is only a reminder */ }
+  }
+
+  document.addEventListener('admin:ready', () => {
+    refreshReviewBadge();
+    // Customers can post reviews while the panel is open; a light check keeps the menu count current.
+    setInterval(() => { if (!document.hidden) refreshReviewBadge(); }, 120000);
+  });
+
+  /** Search box plus a list of matching products from this storefront. */
+  function productPicker() {
+    const search = el('input', { type: 'search', placeholder: 'Type to search your products', 'aria-label': 'Search products' });
+    const select = el('select', { name: 'productId', required: true, 'aria-label': 'Product' });
+    let timer = null;
+    const load = async () => {
+      const q = search.value.trim();
+      try {
+        const res = await Api.get(API + '/products?size=50' + (q ? '&q=' + encodeURIComponent(q) : ''));
+        mount(select, res.items.length
+          ? res.items.map((p) => el('option', { value: String(p.id), text: p.title + (p.status === 'PUBLISHED' ? '' : ' (' + UI.label(p.status).toLowerCase() + ')') }))
+          : el('option', { value: '', text: q ? 'No products match “' + q + '”' : 'No products yet' }));
+      } catch (e) {
+        mount(select, el('option', { value: '', text: 'Could not load products' }));
+      }
+    };
+    search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 300); });
+    search.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); load(); } });
+    load();
+    return el('div', { class: 'product-picker' }, search, select);
+  }
+
+  function addReviewForm() {
+    const rating = selectEl('rating', [[5, '★★★★★ 5 stars'], [4, '★★★★ 4 stars'], [3, '★★★ 3 stars'],
+      [2, '★★ 2 stars'], [1, '★ 1 star']], 5);
+    const form = el('form', null,
+      UI.field('Product', productPicker()),
+      el('div', { class: 'row' },
+        UI.field('Customer name', input('authorName', { required: true, maxlength: '120', autocomplete: 'off', placeholder: 'Priya Sharma' }),
+          'Shown as first name and initial, e.g. “Priya S.”'),
+        UI.field('Rating', rating),
+        UI.field('Where did they share it?', selectEl('source', REVIEW_SOURCES, 'WHATSAPP'))),
+      UI.field('Title (optional)', input('title', { maxlength: '120', placeholder: 'Great value for money' })),
+      UI.field('What the customer said', el('textarea', { name: 'body', rows: '4', maxlength: '3000', required: true }),
+        'Use their own words. You can fix spelling, but don’t change the meaning.'),
+      el('label', { class: 'check mb' }, input('publish', { type: 'checkbox', checked: true }), ' Show on the website now (untick to keep it waiting for approval)'),
+      el('div', { class: 'actions' }, el('button', { class: 'btn', type: 'submit', text: 'Add review' })),
+      el('p', { class: 'muted small mt' }, 'Only add real feedback from real customers, and keep their original message. ',
+        'On the website the review is labelled with where it came from (for example “Shared with us on WhatsApp”) ',
+        'and is never marked as a verified purchase. Indian consumer rules treat made-up reviews as an unfair trade practice.'));
+    return onSubmit(form, async (v) => {
+      const saved = await Api.post(API + '/reviews', {
+        productId: Number(v.productId), authorName: v.authorName, rating: Number(v.rating), title: v.title,
+        body: v.body, source: v.source, publish: v.publish
+      });
+      UI.toast(saved.status === 'APPROVED' ? 'Review added and live on the website' : 'Review added to the approval queue', 'success');
+      reviewFilter.status = saved.status === 'APPROVED' ? 'APPROVED' : 'PENDING';
+      reviewFilter.page = 0;
+      reviewsView();
+    });
+  }
 
   async function reviewsView() {
     const result = await Api.get(API + '/reviews?page=' + reviewFilter.page + (reviewFilter.status ? '&status=' + reviewFilter.status : ''));
     const writable = can('CATALOG_WRITE');
+    refreshReviewBadge();
     const filter = selectEl('status', [['PENDING', 'Waiting for approval'], ['APPROVED', 'Approved'], ['REJECTED', 'Rejected'], ['', 'All reviews']], reviewFilter.status);
     filter.addEventListener('change', () => { reviewFilter.status = filter.value; reviewFilter.page = 0; reviewsView(); });
 
@@ -475,8 +543,11 @@
       const act = (status, label, cls) => {
         const b = el('button', { class: 'btn small ' + (cls || ''), type: 'button', text: label });
         b.addEventListener('click', () => UI.busy(b, async () => {
-          try { await Api.patch(API + '/reviews/' + r.id, { status, adminReply: reply.value.trim() }); UI.toast('Review ' + UI.label(status).toLowerCase(), 'success'); reviewsView(); }
-          catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+          try {
+            await Api.patch(API + '/reviews/' + r.id, { status, adminReply: reply.value.trim() });
+            UI.toast(status === r.status ? 'Reply saved' : status === 'APPROVED' ? 'Review approved — it is now on the website' : 'Review hidden from the website', 'success');
+            reviewsView();
+          } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
         }));
         return b;
       };
@@ -485,21 +556,35 @@
         if (!confirm('Delete this review permanently?')) return;
         try { await Api.del(API + '/reviews/' + r.id); reviewsView(); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
       }));
+      const fromTeam = r.source && r.source !== 'WEBSITE';
       return el('div', { class: 'card review-admin' },
-        el('div', { class: 'actions' }, el('span', { class: 'stars', text: '\u2605'.repeat(r.rating) + '\u2606'.repeat(5 - r.rating) }),
-          r.title ? el('strong', { text: r.title }) : null, el('span', { class: 'spacer' }), UI.badge(r.status)),
-        el('div', { class: 'muted small' }, r.authorName, r.verifiedPurchase ? ' \u00B7 verified purchase' : '', ' \u00B7 ', UI.date(r.createdAt), ' \u00B7 ',
+        el('div', { class: 'actions' }, el('span', { class: 'stars', text: '★'.repeat(r.rating) + '☆'.repeat(5 - r.rating) }),
+          r.title ? el('strong', { text: r.title }) : null, el('span', { class: 'spacer' }),
+          fromTeam ? el('span', { class: 'badge purple', text: 'Added by team' }) : null,
+          UI.badge(r.status, r.status === 'PENDING' ? 'Waiting' : null)),
+        el('div', { class: 'muted small' }, r.authorName, r.verifiedPurchase ? ' · verified purchase' : '',
+          fromTeam ? ' · ' + r.sourceLabel + (r.addedBy ? ' (added by ' + r.addedBy + ')' : '') : ' · written on the website',
+          ' · ', UI.date(r.createdAt), ' · ',
           el('a', { href: '#/products/' + r.productId, text: r.productTitle })),
         r.body ? el('p', { class: 'review-body', text: r.body }) : null,
         writable ? [reply, el('div', { class: 'actions mt' },
-          r.status !== 'APPROVED' ? act('APPROVED', 'Approve') : act('APPROVED', 'Save reply', 'secondary'),
-          r.status !== 'REJECTED' ? act('REJECTED', 'Reject', 'secondary') : null, del)]
+          r.status !== 'APPROVED' ? act('APPROVED', 'Approve & publish') : act('APPROVED', 'Save reply', 'secondary'),
+          r.status !== 'REJECTED' ? act('REJECTED', r.status === 'APPROVED' ? 'Unpublish' : 'Reject', 'secondary') : null, del)]
           : r.adminReply ? el('p', { class: 'note small', text: 'Reply: ' + r.adminReply }) : null);
     });
 
+    const emptyText = reviewFilter.status === 'PENDING'
+      ? 'No reviews are waiting for approval. New reviews from customers appear here first and go live only when you approve them.'
+      : 'No reviews here.';
     mount(view(), head('Reviews', filter),
-      cards.length ? cards : el('div', { class: 'card empty', text: reviewFilter.status === 'PENDING' ? 'No reviews are waiting for approval.' : 'No reviews here.' }),
-      K.pager(result, (pg) => { reviewFilter.page = pg; reviewsView(); }));
+      writable ? el('details', { class: 'card add-review' },
+        el('summary', null, el('strong', { text: 'Add a review' }),
+          el('span', { class: 'muted small', text: ' — feedback a customer sent you by WhatsApp, email, phone or in person' })),
+        addReviewForm()) : null,
+      cards.length ? cards : el('div', { class: 'card empty', text: emptyText }),
+      K.pager(result, (pg) => { reviewFilter.page = pg; reviewsView(); }),
+      el('p', { class: 'muted small' }, 'Approve honest reviews even when they are negative — a polite reply usually builds more trust than hiding them. ',
+        'Customer reviews skip this queue only if “Publish customer reviews immediately” is ticked in Settings.'));
   }
 
   // ================================================================== system health

@@ -45,6 +45,18 @@ public final class FileTypes {
         throw ApiException.rule("INVALID_IMAGE", "Only PNG, JPEG, WEBP or GIF images are allowed");
     }
 
+    /** MP4-family brands browsers play as video/mp4 (QuickTime "qt  " covers phone recordings saved as .mov). */
+    private static final Set<String> MP4_BRANDS = Set.of("isom", "iso2", "iso3", "iso4", "iso5", "iso6", "mp41", "mp42",
+            "avc1", "M4V ", "M4VP", "mmp4", "MSNV", "dash", "qt  ", "f4v ");
+
+    /** Returns "mp4" or "webm" if the header bytes are a playable video container, otherwise rejects. */
+    public static String requireVideo(byte[] header) {
+        if (startsWith(header, 0x1A, 0x45, 0xDF, 0xA3)) return "webm";
+        if (header.length >= 12 && header[4] == 'f' && header[5] == 't' && header[6] == 'y' && header[7] == 'p'
+                && MP4_BRANDS.contains(new String(header, 8, 4, java.nio.charset.StandardCharsets.ISO_8859_1))) return "mp4";
+        throw ApiException.rule("INVALID_VIDEO", "Only MP4 or WebM videos are allowed");
+    }
+
     public static String requireDigitalFile(String filename, byte[] header) {
         String ext = extension(filename);
         if (ext.isEmpty() || BLOCKED_EXTENSIONS.contains(ext) || !DIGITAL_EXTENSIONS.contains(ext)) {

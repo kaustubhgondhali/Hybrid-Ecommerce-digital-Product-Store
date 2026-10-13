@@ -77,4 +77,5 @@ public class ProductImage {
     public String getAltText() { return altText; }
     public void setAltText(String altText) { this.altText = altText; }
     public int getSortOrder() { return sortOrder; }
+    public void setSortOrder(int sortOrder) { this.sortOrder = sortOrder; }
 }

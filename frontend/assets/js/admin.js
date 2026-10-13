@@ -38,11 +38,9 @@
 
   async function loginPage() {
     document.title = SF_NAME + ' admin \u2013 sign in';
-    try {
-      await Api.get(API + '/auth/me');
-      location.href = '/' + SF + '/admin';
-      return;
-    } catch (e) { /* not signed in */ }
+    // The sign-in page always asks for the email and password: a session still open in this browser is ended first,
+    // so the hidden footer entrance (and this page) never opens the panel without signing in.
+    await Api.post(API + '/auth/logout').catch(() => null);
     const msg = el('div');
     const totp = el('input', { name: 'totpCode', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: '8' });
     const totpField = UI.field('Authenticator code', totp, 'Enter the 6-digit code from your authenticator app.');
@@ -97,6 +95,8 @@
   ];
 
   async function app() {
+    // Coming back with the browser's Back button after signing out must not show the old panel from memory.
+    window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
     try {
       me = await Api.get(API + '/auth/me');
     } catch (e) {
@@ -133,6 +133,18 @@
       el('div', { class: 'admin-main', id: 'view' }));
     window.addEventListener('hashchange', route);
     route();
+    document.dispatchEvent(new CustomEvent('admin:ready'));
+  }
+
+  /** Shows a small count next to a menu item (e.g. reviews waiting for approval); 0 hides it. */
+  function navBadge(routeName, count) {
+    const link = document.querySelector('.admin-sidebar nav a[data-route="' + routeName + '"]');
+    if (!link) return;
+    let badge = link.querySelector('.nav-count');
+    if (!count) { if (badge) badge.remove(); return; }
+    if (!badge) { badge = el('span', { class: 'nav-count' }); link.append(badge); }
+    badge.textContent = count > 99 ? '99+' : String(count);
+    badge.title = count + ' waiting';
   }
 
   function forcedPasswordChange() {
@@ -465,12 +477,78 @@
       refresh();
     });
 
-    const sections = [header, details];
+    const sections = [header, details, dealContentSection(p, writable, refresh)];
     if (p.sellingMethod === 'DIRECT') sections.push(variantsSection(p, writable, refresh));
-    sections.push(imagesSection(p, writable, refresh));
+    sections.push(imagesSection(p, writable, refresh), videosSection(p, writable, refresh));
     if (p.sellingMethod === 'AFFILIATE') sections.push(affiliateSection(p, refresh));
     if (p.productType === 'DIGITAL' && p.sellingMethod === 'DIRECT') sections.push(await deliverySection(p, refresh));
+    if (p.status === 'PUBLISHED' && writable) sections.push(await dealOfDaySection(p));
     mount(view(), sections);
+  }
+
+  /** Promote a published product as the home page's Deal of the Day, with a real end time for the countdown. */
+  async function dealOfDaySection(p) {
+    const store = await Api.get(API + '/settings/store').catch(() => ({}));
+    const isCurrent = store.dealOfDayProductId === p.id && store.dealOfDayEndsAt && new Date(store.dealOfDayEndsAt) > new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    // tonight at 23:59, or tomorrow night when less than two hours of today are left
+    const d = new Date(Date.now() + (new Date().getHours() >= 22 ? 24 * 3600 * 1000 : 0));
+    const defaultEnd = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T23:59';
+    const ends = input('endsAt', { type: 'datetime-local', required: true, value: defaultEnd });
+    const form = el('form', { class: 'inline-form' }, UI.field('Ends', ends),
+      el('button', { class: 'btn', type: 'submit', text: isCurrent ? 'Update end time' : 'Make Deal of the Day' }));
+    onSubmit(form, async () => {
+      await Api.put(API + '/deal-of-the-day', { productId: p.id, endsAt: new Date(ends.value).toISOString() });
+      UI.toast('This product is now the Deal of the Day', 'success');
+      productsRoute([String(p.id)]);
+    });
+    const stop = el('button', { class: 'btn ghost', type: 'button', text: 'Stop the deal' });
+    stop.addEventListener('click', () => UI.busy(stop, async () => {
+      try { await Api.put(API + '/deal-of-the-day', { productId: null }); UI.toast('Deal of the Day removed', 'success'); productsRoute([String(p.id)]); }
+      catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+    }));
+    return el('div', { class: 'card' }, el('h2', { text: 'Deal of the Day' }),
+      el('p', { class: 'muted small', text: isCurrent
+        ? 'This product is the Deal of the Day until ' + UI.date(store.dealOfDayEndsAt) + '. The home page shows it with a countdown.'
+        : 'Show this product at the top of the home page with a countdown until the time you choose. Only one product at a time; use a real end time.' }),
+      form, isCurrent ? stop : null);
+  }
+
+  /** Highlights, pros/cons, verdict and rating: the content that convinces shoppers (and ranks on Google). */
+  function dealContentSection(p, writable, refresh) {
+    const area = (name, value, placeholder) => {
+      const t = el('textarea', { name, rows: '4', maxlength: '2000', placeholder, disabled: !writable });
+      t.value = value || '';
+      return t;
+    };
+    const ratings = [['0', 'Not rated'], ...[50, 45, 40, 35, 30, 25, 20, 15, 10].map((r) => [String(r), (r / 10).toFixed(1) + ' stars'])];
+    const specsArea = () => {
+      const t = el('textarea', { name: 'specs', rows: '6', maxlength: '8000', disabled: !writable,
+        placeholder: SF === 'digital' ? 'Platform: Web, Windows, Mac\nFree trial: 14 days\nPricing: From ₹499 a month\nLanguage: English, Hindi\nCertificate: Yes'
+          : 'Battery: Up to 30 hours\nConnectivity: Bluetooth 5.3\nWater resistance: IPX5\nWarranty: 1 year\nIn the box: Earbuds, case, USB-C cable' });
+      t.value = p.specs || '';
+      return t;
+    };
+    const form = el('form', { class: 'card' },
+      el('h2', { text: 'Deal content' }),
+      el('p', { class: 'muted small', text: 'Shown on the product page next to the Buy button. One item per line, up to 8 lines each.' }),
+      UI.field('Highlights', area('highlights', p.highlights, 'Up to 30 hours of battery\nActive noise cancellation\n1-year warranty')),
+      el('div', { class: 'row' },
+        UI.field('Pros (what we like)', area('pros', p.pros, 'Great value for money\nComfortable for long use')),
+        UI.field('Cons (keep in mind)', area('cons', p.cons, 'No wireless charging'))),
+      UI.field('Our verdict', area('verdict', p.verdict, 'Who should buy it, and why it is a good deal right now.'), 'One or two sentences.'),
+      UI.field('Specifications', specsArea(), 'One per line as “Name: Value”. Shown as a table on the product page and lined up on the compare page.'),
+      UI.field('Our rating', selectEl('expertRating', ratings, p.expertRating ? String(p.expertRating) : '0', { disabled: !writable })),
+      writable ? el('button', { class: 'btn', type: 'submit', text: 'Save deal content' }) : null);
+    onSubmit(form, async (v) => {
+      await Api.put(API + '/products/' + p.id, {
+        highlights: v.highlights, pros: v.pros, cons: v.cons, verdict: v.verdict, expertRating: intOrNull(v.expertRating) || 0,
+        specs: v.specs
+      });
+      UI.toast('Deal content saved', 'success');
+      refresh();
+    });
+    return form;
   }
 
   function variantsSection(p, writable, refresh) {
@@ -521,12 +599,22 @@
   }
 
   function imagesSection(p, writable, refresh) {
-    const list = el('div', { class: 'image-list' }, p.images.map((img) => {
+    const list = el('div', { class: 'image-list' }, p.images.map((img, i) => {
       const del = el('button', { class: 'btn ghost small', type: 'button', text: 'Remove' });
       del.addEventListener('click', () => UI.busy(del, async () => {
         if (!confirm('Remove this image?')) return;
         try { await Api.del(API + '/products/' + p.id + '/images/' + img.id); refresh(); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
       }));
+      let main = null;
+      if (i === 0) {
+        main = el('span', { class: 'badge green', title: 'Shown on product cards, in search results and when the page is shared', text: 'Main image' });
+      } else if (writable) {
+        main = el('button', { class: 'btn ghost small', type: 'button', text: 'Make main' });
+        main.addEventListener('click', () => UI.busy(main, async () => {
+          try { await Api.post(API + '/products/' + p.id + '/images/' + img.id + '/main'); UI.toast('Main image changed', 'success'); refresh(); }
+          catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+        }));
+      }
       const alt = input('alt', { value: img.alt || '', maxlength: '250', placeholder: 'Describe the image', 'aria-label': 'Alt text', disabled: !writable });
       alt.addEventListener('change', async () => {
         try {
@@ -535,16 +623,34 @@
         } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
       });
       return el('figure', null, el('img', { src: img.thumbUrl || img.url, alt: img.alt || '', loading: 'lazy', decoding: 'async' }),
-        el('figcaption', null, alt, writable ? del : null));
+        el('figcaption', null, main, alt, writable ? del : null));
     }));
+    const files = input('file', { type: 'file', accept: 'image/jpeg,image/png,image/webp,image/gif', multiple: true, required: true });
+    const status = el('span', { class: 'muted small' });
     const form = el('form', { class: 'inline-form' },
-      UI.field('Image (JPEG, PNG, WebP or GIF, max 5 MB)', input('file', { type: 'file', accept: 'image/jpeg,image/png,image/webp,image/gif', required: true })),
-      UI.field('Alt text', input('alt', { maxlength: '200', class: 'wide' })),
-      el('button', { class: 'btn secondary', type: 'submit', text: 'Upload' }));
+      UI.field('Images (JPEG, PNG, WebP or GIF, max 5 MB each; you can choose several)', files),
+      UI.field('Alt text (optional, used for all chosen images)', input('alt', { maxlength: '200', class: 'wide' })),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Upload' }), status);
     onSubmit(form, async () => {
-      const fd = new FormData(form);
-      if (!fd.get('file') || !fd.get('file').size) throw new Error('Choose an image file');
-      await Api.upload(API + '/products/' + p.id + '/images', fd);
+      const chosen = [...files.files];
+      if (!chosen.length) throw new Error('Choose at least one image');
+      const room = 10 - p.images.length;
+      if (chosen.length > room) throw new Error('A product can have 10 images. You can add ' + room + ' more.');
+      const alt = form.elements.alt.value.trim();
+      for (let i = 0; i < chosen.length; i++) {
+        status.textContent = 'Uploading ' + (i + 1) + ' of ' + chosen.length + '…';
+        const fd = new FormData();
+        fd.append('file', chosen[i]);
+        if (alt) fd.append('alt', alt);
+        try {
+          await Api.upload(API + '/products/' + p.id + '/images', fd);
+        } catch (e) {
+          UI.toast((i ? i + ' of ' + chosen.length + ' uploaded. ' : '') + chosen[i].name + ': ' + UI.errorMessage(e), 'error');
+          if (i) refresh();
+          return;
+        }
+      }
+      UI.toast(chosen.length === 1 ? 'Image uploaded' : chosen.length + ' images uploaded', 'success');
       refresh();
     });
     return el('div', { class: 'card' }, el('h2', { text: 'Images' }),
@@ -552,53 +658,232 @@
       writable ? form : null);
   }
 
-  function affiliateSection(p, refresh) {
-    const link = p.affiliateLink;
-    const writable = can('AFFILIATE_WRITE');
-    const form = el('form', null,
-      UI.field('Affiliate URL', input('url', { value: link ? link.destinationUrl : '', required: true, maxlength: '2048', placeholder: 'https://www.partner.com/product?tag=yourid' }),
-        'Paste the exact link from your affiliate program (Amazon, Cuelinks, EarnKaro, impact.com, CJ, Awin, any network). It is stored and redirected unchanged.'),
-      el('div', { class: 'row' },
-        UI.field('Merchant name (optional)', input('merchantName', { value: link ? link.merchantName : '', maxlength: '120' })),
-        UI.field('Display price (\u20B9, optional)', input('displayPrice', { value: link ? UI.fromMinor(link.displayPriceMinor) : '', inputmode: 'decimal' }))),
-      UI.field('Disclosure', el('textarea', { name: 'disclosure', maxlength: '500', text: link ? link.disclosure || '' : '' }),
-        'Shown next to the buy button. Leave empty for the standard disclosure.'),
-      writable ? el('button', { class: 'btn', type: 'submit', text: link ? 'Update link' : 'Save link' }) : null);
-    onSubmit(form, async (v) => {
-      const body = { url: v.url, merchantName: v.merchantName || null, displayPriceMinor: minorOrNull(v.displayPrice), disclosure: v.disclosure || null, confirmNewDomain: false };
+  const MAX_VIDEO_MB = 100;
+  const duration = (s) => Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+
+  /**
+   * Plays the chosen file in a hidden video element to read its length and size and to capture a still frame for the
+   * poster. Resolves null when this browser cannot play it (then most shoppers' browsers cannot either).
+   */
+  function inspectVideo(file) {
+    return new Promise((resolve) => {
+      const src = URL.createObjectURL(file);
+      const v = document.createElement('video');
+      let done = false;
+      const finish = (result) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        v.removeAttribute('src');
+        v.load();
+        URL.revokeObjectURL(src);
+        resolve(result);
+      };
+      const timer = setTimeout(() => finish(null), 20000);
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      v.addEventListener('error', () => finish(null));
+      v.addEventListener('loadedmetadata', () => {
+        if (!v.videoWidth || !v.videoHeight) { finish(null); return; }
+        v.currentTime = Math.min(1, (v.duration || 0) / 3);
+      });
+      v.addEventListener('seeked', () => {
+        const scale = Math.min(1, 1280 / Math.max(v.videoWidth, v.videoHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(v.videoWidth * scale);
+        canvas.height = Math.round(v.videoHeight * scale);
+        canvas.getContext('2d').drawImage(v, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((poster) => finish({
+          poster, duration: Math.max(1, Math.round(v.duration || 0)), width: v.videoWidth, height: v.videoHeight
+        }), 'image/jpeg', 0.85);
+      }, { once: true });
+      v.src = src;
+    });
+  }
+
+  /** Up to 3 short videos shown in the product gallery after the main image. */
+  function videosSection(p, writable, refresh) {
+    const videos = p.videos || [];
+    const list = videos.map((v) => {
+      const title = input('title', { value: v.title || '', maxlength: '200', placeholder: 'Video title (shown in Google results)', 'aria-label': 'Video title', disabled: !writable });
+      title.addEventListener('change', async () => {
+        try {
+          await Api.patch(API + '/products/' + p.id + '/videos/' + v.id, { title: title.value.trim() });
+          UI.toast('Video title saved', 'success');
+        } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      });
+      const del = el('button', { class: 'btn ghost small', type: 'button', text: 'Remove' });
+      del.addEventListener('click', () => UI.busy(del, async () => {
+        if (!confirm('Remove this video?')) return;
+        try { await Api.del(API + '/products/' + p.id + '/videos/' + v.id); refresh(); } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+      }));
+      const facts = [v.durationSeconds ? duration(v.durationSeconds) : null, v.width && v.height ? v.width + '×' + v.height : null,
+        (v.sizeBytes / 1024 / 1024).toFixed(1) + ' MB'].filter(Boolean).join(' · ');
+      return el('figure', { class: 'video-item' },
+        el('video', { src: v.url, poster: v.posterUrl, controls: true, preload: 'none', playsinline: true }),
+        el('figcaption', null, el('div', { class: 'muted small', text: facts }), title, writable ? del : null));
+    });
+
+    const file = input('file', { type: 'file', accept: 'video/mp4,video/webm,video/quicktime', required: true });
+    const titleInput = input('title', { maxlength: '200', class: 'wide', placeholder: 'e.g. Unboxing and sound test' });
+    const preview = el('div', { class: 'video-check' });
+    const bar = el('progress', { class: 'upload-progress', max: '100', value: '0', hidden: true });
+    let checked = null;
+    let posterUrl = null;
+    file.addEventListener('change', async () => {
+      checked = null;
+      if (posterUrl) URL.revokeObjectURL(posterUrl);
+      posterUrl = null;
+      mount(preview);
+      const f = file.files[0];
+      if (!f) return;
+      if (f.size > MAX_VIDEO_MB * 1024 * 1024) {
+        mount(preview, el('div', { class: 'alert error', text: 'This video is ' + (f.size / 1024 / 1024).toFixed(0) + ' MB. Videos must be ' + MAX_VIDEO_MB + ' MB or smaller — trim it or export at 1080p.' }));
+        return;
+      }
+      mount(preview, el('p', { class: 'muted small', text: 'Checking the video…' }));
+      const result = await inspectVideo(f);
+      if (file.files[0] !== f) return;
+      checked = result;
+      if (!result) {
+        mount(preview, el('div', { class: 'alert warning', text: 'This browser cannot play this video, so many shoppers would not be able to either. '
+          + 'Export it as MP4 (H.264). On iPhone: Settings → Camera → Formats → Most Compatible.' }));
+        return;
+      }
+      posterUrl = URL.createObjectURL(result.poster);
+      mount(preview, el('img', { src: posterUrl, alt: 'Frame shown before the video plays' }),
+        el('div', { class: 'muted small' },
+          el('div', { text: 'Length ' + duration(result.duration) + ' · ' + result.width + '×' + result.height + ' · ' + (f.size / 1024 / 1024).toFixed(1) + ' MB' }),
+          el('div', { text: 'This frame is shown before the video plays.' }),
+          result.duration > 90 ? el('div', { class: 'warn-text', text: 'Tip: clips under a minute keep shoppers watching.' }) : null));
+    });
+    const form = el('form', { class: 'inline-form video-form' },
+      UI.field('Video (MP4 or WebM, max ' + MAX_VIDEO_MB + ' MB)', file),
+      UI.field('Title (optional)', titleInput),
+      el('button', { class: 'btn secondary', type: 'submit', text: 'Upload video' }),
+      preview, bar);
+    onSubmit(form, async () => {
+      const f = file.files[0];
+      if (!f) throw new Error('Choose a video file');
+      if (!checked && !confirm('This video may not play in shoppers’ browsers. Upload it anyway?')) return;
+      const fd = new FormData();
+      fd.append('file', f);
+      if (titleInput.value.trim()) fd.append('title', titleInput.value.trim());
+      if (checked) {
+        fd.append('poster', checked.poster, 'poster.jpg');
+        fd.append('durationSeconds', String(checked.duration));
+        fd.append('width', String(checked.width));
+        fd.append('height', String(checked.height));
+      }
+      bar.hidden = false;
+      bar.value = 0;
       try {
-        await Api.put(API + '/products/' + p.id + '/affiliate-link', body);
+        await Api.uploadWithProgress(API + '/products/' + p.id + '/videos', fd, (r) => { bar.value = Math.round(r * 100); });
+      } finally {
+        bar.hidden = true;
+      }
+      UI.toast('Video uploaded', 'success');
+      refresh();
+    });
+    return el('div', { class: 'card' }, el('h2', { text: 'Videos' }),
+      el('p', { class: 'muted small', text: 'Short clips of 15–60 seconds work best: an unboxing, a demo, or the product in use. '
+        + 'They appear in the product gallery after the main image, and Google can show them in video results.' }),
+      list.length ? el('div', { class: 'video-list' }, list) : el('p', { class: 'muted', text: 'No videos yet.' }),
+      !writable ? null : videos.length < 3 ? form : el('p', { class: 'muted small', text: 'A product can have 3 videos. Remove one to add another.' }));
+  }
+
+  /**
+   * Partner stores for an affiliate product: one link per store, so shoppers can compare prices. The cheapest store
+   * with a shown price becomes the main Buy button; paused stores are hidden from shoppers but keep their clicks.
+   */
+  function affiliateSection(p, refresh) {
+    const links = p.affiliateLinks || [];
+    const writable = can('AFFILIATE_WRITE');
+    const base = API + '/products/' + p.id + '/affiliate-links';
+    let editing = null;
+
+    const url = input('url', { required: true, maxlength: '2048', placeholder: 'https://www.partner.com/product?tag=yourid' });
+    const merchantName = input('merchantName', { maxlength: '120', placeholder: 'e.g. Amazon, Flipkart' });
+    const price = input('displayPrice', { inputmode: 'decimal', placeholder: '1299.00' });
+    const listPrice = input('listPrice', { inputmode: 'decimal', placeholder: '1999.00' });
+    const disclosure = el('textarea', { name: 'disclosure', maxlength: '500', rows: '2' });
+    const formTitle = el('h3', { text: links.length ? 'Add another store' : 'Add the partner store' });
+    const submit = el('button', { class: 'btn', type: 'submit', text: 'Save store' });
+    const cancel = el('button', { class: 'btn ghost', type: 'button', text: 'Cancel', hidden: true });
+    const form = el('form', { class: 'mt' }, formTitle,
+      UI.field('Affiliate URL', url, 'Paste the exact link from your affiliate program (Amazon, Flipkart, Cuelinks, EarnKaro, impact.com, any network). It is stored and redirected unchanged.'),
+      el('div', { class: 'row' },
+        UI.field('Store name (optional)', merchantName),
+        UI.field('Price (\u20B9, optional)', price),
+        UI.field('Original price / MRP (\u20B9, optional)', listPrice, 'Shown struck through with the % off.')),
+      UI.field('Disclosure', disclosure, 'Shown under the Buy button. Leave empty for the standard disclosure.'),
+      writable ? el('div', { class: 'actions' }, submit, cancel) : null);
+    const startEdit = (l) => {
+      editing = l;
+      url.value = l.destinationUrl;
+      merchantName.value = l.merchantName;
+      price.value = UI.fromMinor(l.displayPriceMinor);
+      listPrice.value = UI.fromMinor(l.listPriceMinor);
+      disclosure.value = l.disclosure || '';
+      formTitle.textContent = 'Edit ' + l.merchantName;
+      submit.textContent = 'Update store';
+      cancel.hidden = false;
+      form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      url.focus();
+    };
+    cancel.addEventListener('click', () => refresh());
+    onSubmit(form, async (v) => {
+      const body = {
+        url: v.url, merchantName: v.merchantName || null, displayPriceMinor: minorOrNull(v.displayPrice),
+        listPriceMinor: minorOrNull(v.listPrice), disclosure: v.disclosure || null, confirmNewDomain: false
+      };
+      const save = () => editing ? Api.put(base + '/' + editing.id, body) : Api.post(base, body);
+      try {
+        await save();
       } catch (e) {
         if (e.code !== 'AFFILIATE_DOMAIN_UNCONFIRMED') throw e;
         if (!confirm(e.message + '\n\nAllow redirects to ' + (e.data.domain || 'this domain') + '?')) return;
         body.confirmNewDomain = true;
-        await Api.put(API + '/products/' + p.id + '/affiliate-link', body);
+        await save();
       }
-      UI.toast('Affiliate link saved', 'success');
+      UI.toast(editing ? 'Store updated' : 'Store added', 'success');
       refresh();
     });
-    let staleBox = null;
-    if (link && link.priceStale) {
-      const confirmBtn = writable ? el('button', { class: 'btn small', type: 'button', text: 'Price is still correct' }) : null;
-      if (confirmBtn) confirmBtn.addEventListener('click', () => UI.busy(confirmBtn, async () => {
-        try {
-          await Api.post(API + '/products/' + p.id + '/affiliate-link/confirm-price');
-          UI.toast('Price confirmed', 'success');
-          refresh();
-        } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
+
+    const action = (label, cls, fn) => {
+      const b = el('button', { class: 'btn small ' + (cls || ''), type: 'button', text: label });
+      b.addEventListener('click', () => UI.busy(b, async () => {
+        try { await fn(); refresh(); } catch (e) { if (!handleAuthError(e)) UI.toast(UI.errorMessage(e), 'error'); }
       }));
-      staleBox = el('div', { class: 'alert warning' },
-        'The display price was last checked ' + (link.priceCheckedAt ? UI.date(link.priceCheckedAt, false) : 'never')
-          + ', so it is hidden from shoppers. Check the partner page, then update the price or confirm it. ',
-        confirmBtn);
-    }
-    return el('div', { class: 'card' }, el('h2', { text: 'Affiliate link' }), staleBox,
-      link ? el('dl', { class: 'kv mb' },
-        el('dt', { text: 'Tracking URL' }), el('dd', null, el('a', { href: link.goUrl, target: '_blank', rel: 'noopener', text: location.origin + link.goUrl })),
-        el('dt', { text: 'Merchant' }), el('dd', { text: link.merchantName + ' (' + link.merchantDomain + ')' }),
-        el('dt', { text: 'Price checked' }), el('dd', { text: link.priceCheckedAt ? UI.date(link.priceCheckedAt, false) : '\u2014' }),
-        el('dt', { text: 'Clicks (30 days)' }), el('dd', { text: String(link.clicks30d) }),
-        el('dt', { text: 'Status' }), el('dd', null, UI.badge(link.active ? 'ACTIVE' : 'DISABLED'))) : null,
+      return b;
+    };
+    const rows = links.map((l) => {
+      const discount = l.displayPriceMinor && l.listPriceMinor && l.listPriceMinor > l.displayPriceMinor
+        ? Math.floor((l.listPriceMinor - l.displayPriceMinor) * 100 / l.listPriceMinor) : 0;
+      return el('tr', null,
+        el('td', null, el('strong', { text: l.merchantName }), el('div', { class: 'muted small', text: l.merchantDomain }),
+          el('div', { class: 'small' }, el('a', { href: l.goUrl, target: '_blank', rel: 'noopener', text: location.origin + l.goUrl }))),
+        el('td', { class: 'num' }, l.displayPriceMinor != null ? money(l.displayPriceMinor) : '\u2014',
+          l.listPriceMinor ? el('div', { class: 'muted small' }, el('s', { text: money(l.listPriceMinor) }), discount ? ' \u00B7 ' + discount + '% off' : '') : null),
+        el('td', { class: 'small' }, l.merchantHidesPrices ? el('span', { class: 'badge', title: 'Shoppers see "Check price" (store rule)', text: 'Price hidden' })
+          : l.priceStale ? el('span', { class: 'badge amber', text: 'Needs re-check' })
+            : l.priceCheckedAt ? UI.date(l.priceCheckedAt, false) : '\u2014'),
+        el('td', { class: 'num', text: String(l.clicks30d) }),
+        el('td', null, UI.badge(l.active ? 'ACTIVE' : 'DISABLED', l.active ? 'Live' : 'Paused')),
+        el('td', null, writable ? el('div', { class: 'actions' },
+          el('button', { class: 'btn small secondary', type: 'button', text: 'Edit', on: { click: () => startEdit(l) } }),
+          l.displayPriceMinor != null && !l.merchantHidesPrices
+            ? action('Price still correct', 'secondary', () => Api.post(base + '/' + l.id + '/confirm-price')) : null,
+          action(l.active ? 'Pause' : 'Resume', 'ghost', () => Api.patch(base + '/' + l.id, { active: !l.active }))) : null));
+    });
+    const stale = links.filter((l) => l.active && l.priceStale && !l.merchantHidesPrices);
+    return el('div', { class: 'card' }, el('h2', { text: 'Partner stores' }),
+      el('p', { class: 'muted small', text: 'Add every store that sells this product. Shoppers see a price comparison, and the cheapest store with a shown price becomes the main Buy button.' }),
+      stale.length ? el('div', { class: 'alert warning', text: stale.length === 1
+        ? 'One price is older than the allowed age, so it is hidden from shoppers. Check the partner page, then update the price or click "Price still correct".'
+        : stale.length + ' prices are older than the allowed age and hidden from shoppers. Check them, then update or confirm.' }) : null,
+      links.length ? table(['Store', el('th', { class: 'num', text: 'Price' }), 'Checked', el('th', { class: 'num', text: 'Clicks (30d)' }), 'Status', ''], rows) : null,
       form);
   }
 
@@ -990,19 +1275,23 @@
       const merchants = await Api.get(API + '/affiliate/merchants');
       mount(body, el('div', { class: 'card' },
         el('p', { class: 'muted', text: 'A merchant is created automatically the first time you confirm a new affiliate domain. Set a sub-ID parameter (e.g. "ascsubtag", "subid", "aff_sub") to pass each click\u2019s reference to the network for conversion matching.' }),
-        table(['Domain', 'Name', 'Sub-ID parameter', 'Allow http', 'Active', ''], merchants.map((m) => {
+        el('p', { class: 'muted small', text: '"Hide prices" shows shoppers "Check price on <store>" instead of a price. It is on for Amazon automatically: Amazon only allows prices that come from its own API and are refreshed every 24 hours.' }),
+        table(['Domain', 'Name', 'Sub-ID parameter', 'Allow http', 'Hide prices', 'Active', ''], merchants.map((m) => {
           const name = input('name', { value: m.name, maxlength: '120' });
           const sub = input('subIdParam', { value: m.subIdParam || '', maxlength: '40', placeholder: 'none' });
           const http = input('allowHttp', { type: 'checkbox', checked: m.allowHttp });
+          const hide = input('hidePrices', { type: 'checkbox', checked: m.hidePrices, 'aria-label': 'Hide prices' });
           const active = input('active', { type: 'checkbox', checked: m.active });
           const save = el('button', { class: 'btn small', type: 'button', text: 'Save' });
           save.addEventListener('click', () => UI.busy(save, async () => {
             try {
-              await Api.patch(API + '/affiliate/merchants/' + m.id, { name: name.value.trim(), subIdParam: sub.value.trim(), allowHttp: http.checked, active: active.checked });
+              await Api.patch(API + '/affiliate/merchants/' + m.id, { name: name.value.trim(), subIdParam: sub.value.trim(), allowHttp: http.checked,
+                hidePrices: hide.checked, active: active.checked });
               UI.toast('Merchant saved', 'success');
             } catch (e) { UI.toast(UI.errorMessage(e), 'error'); }
           }));
-          return el('tr', null, el('td', { text: m.domain }), el('td', null, name), el('td', null, sub), el('td', null, http), el('td', null, active), el('td', null, writable ? save : null));
+          return el('tr', null, el('td', { text: m.domain }), el('td', null, name), el('td', null, sub), el('td', null, http), el('td', null, hide),
+            el('td', null, active), el('td', null, writable ? save : null));
         }), 'No merchants yet.')));
     } else if (tab === 'conversions') {
       const result = await Api.get(API + '/affiliate/conversions?size=100');
@@ -1062,6 +1351,13 @@
       el('div', { class: 'row' },
         UI.field('Store name', input('storeName', { value: store.storeName, required: true, maxlength: '120' })),
         UI.field('Support email', input('supportEmail', { type: 'email', value: store.supportEmail || '', maxlength: '254' }))),
+      UI.field('WhatsApp number for the chat button', input('whatsappNumber', { value: store.whatsappNumber ? '+' + store.whatsappNumber : '',
+        maxlength: '20', placeholder: '+91 98765 43210', inputmode: 'tel' }), 'Shoppers see a chat button on every page. Leave empty to hide it.'),
+      el('div', { class: 'row' },
+        UI.field('Google Analytics 4 ID', input('ga4Id', { value: store.ga4Id || '', maxlength: '20', placeholder: 'G-XXXXXXXXXX' }),
+          'From Google Analytics → Admin → Data streams. Loads only after a shopper accepts cookies. Leave empty to turn off.'),
+        UI.field('Meta (Facebook/Instagram) Pixel ID', input('metaPixelId', { value: store.metaPixelId || '', maxlength: '20', placeholder: '1234567890123456', inputmode: 'numeric' }),
+          'From Meta Events Manager → Data sources. Loads only after a shopper accepts cookies. Leave empty to turn off.')),
       el('div', { class: 'row' },
         UI.field('Seller legal name', input('sellerLegalName', { value: store.sellerLegalName || '', maxlength: '200' })),
         UI.field('GSTIN', input('sellerTaxId', { value: store.sellerTaxId || '', maxlength: '15', placeholder: '27ABCDE1234F1Z5' }), 'Your state is filled in from the GSTIN.')),
@@ -1082,7 +1378,8 @@
       await Api.put(API + '/settings/store', {
         storeName: v.storeName, supportEmail: v.supportEmail, sellerLegalName: v.sellerLegalName, sellerTaxId: v.sellerTaxId,
         sellerAddress: v.sellerAddress, taxRateBps: intOrNull(v.taxRateBps), invoicePrefix: v.invoicePrefix,
-        sellerStateCode: v.sellerStateCode, defaultHsnSac: v.defaultHsnSac, pricesIncludeTax: Boolean(v.pricesIncludeTax)
+        sellerStateCode: v.sellerStateCode, defaultHsnSac: v.defaultHsnSac, pricesIncludeTax: Boolean(v.pricesIncludeTax),
+        whatsappNumber: v.whatsappNumber || '', ga4Id: v.ga4Id || '', metaPixelId: v.metaPixelId || ''
       });
       settingsView();
       UI.toast('Store details saved', 'success');
@@ -1307,7 +1604,7 @@
   /** Lets feature modules loaded after this file add their own sections to the panel. */
   window.AdminKit = {
     SF, SF_NAME, API, GST_RATES, can, view, head, table, pager, onSubmit, input, selectEl, minorOrNull, intOrNull,
-    stat, kvRow, handleAuthError, affiliateOnly: true,
+    stat, kvRow, handleAuthError, navBadge, inspectVideo, affiliateOnly: true,
     register(route, label, perm, fn, after) {
       ROUTES[route] = fn;
       const i = NAV.findIndex((n) => n[0] === after);

@@ -30,15 +30,29 @@ displays what the server returns. Set `AFFILIATE_ONLY=false` only if you also wa
 | GST-style invoices with gapless numbering per storefront and year, print / save as PDF | Done |
 | Digital delivery: files (signed short-lived download links), license keys, customer library | Done |
 | Affiliate: merchants + domain allowlist, `/go/{code}` click tracking, sub-IDs, CSV import + signed postback URL, conversion rate per product/merchant | Done |
-| Affiliate prices: hidden on the storefront once older than `AFFILIATE_PRICE_MAX_AGE_DAYS` until re-checked; price-drop email (≥5%, max one per product per customer every 7 days) to customers with the deal in their cart | Done |
+| Affiliate prices: hidden on the storefront once older than `AFFILIATE_PRICE_MAX_AGE_DAYS` until re-checked; price-drop email (≥5%, max one per product per customer every 7 days) to customers with the deal in their cart or wishlist; never for stores whose prices are hidden (Amazon) | Done |
+| **Deal pages**: discount badges, "lowest in 30 days" and price-drop flags, 30-day price range, verdict, pros and cons, our rating, similar deals; home page with featured deals, top deals, price drops and trending | Done |
+| **Compare stores**: several partner stores per product, cheapest first; Amazon prices hidden by the merchant's "Hide prices" rule ("Check price") | Done |
+| **Free automations**: nightly broken-link check (pauses dead affiliate links), welcome email, weekly deals digest, review-request email, daily store summary for master admins, Telegram channel posts for new deals and price drops | Done |
+| **Web Stories** (Google's AMP format): built in each admin (photos, short videos, or one click from 3-10 products), shown at the bottom of store pages, on `/{store}/stories` and in the sitemap | Done |
+| **Product videos**: up to 3 MP4/WebM clips per product (100 MB each) with a poster frame captured in the browser; shown in the gallery after the main image, with VideoObject markup for Google | Done |
+| **Storefront layout** in an Apple-like style: translucent top bar with search panel and phone menu, large centred hero with the store logo, category row, sideways deal shelves, sticky buy bar on product pages, fade-in on scroll (brand colours and logos unchanged) | Done |
+| Digital storefront: 30 categories (courses, SaaS, AI tools, templates, ...) in priority order; empty categories stay out of menus and the sitemap | Done |
 | **Research** admin tool: niche + notes → categories, products to search for, and which affiliate programs fit | Done |
+| **Shopping features**: search suggestions while typing, sort and filters (store, discount, price), specifications table, compare up to 4 products, recently viewed, honest "clicked this week" counts, share buttons | Done |
+| **Coupons & offers** (`/{store}/offers`) and a page per partner store (`/{store}/store/{domain}`); "Copy code & go" through a tracked link; Deal of the Day with countdown; price-drop alerts and newsletter (both confirmed by email); WhatsApp chat button | Done |
+| **Sales & demand** admin tool: today / this week / this month / last 6 months / this year, compared with the period before | Done |
+| **Buying guides** (`/{store}/guides`): articles with product cards and "top picks" rows, contents box, Article data for Google | Done |
+| **Installable app** (PWA): "Install the app" / Add to Home screen, offline page | Done |
+| **Google Analytics 4 and Meta Pixel**, loaded only after the shopper accepts cookies | Done |
+| **CSV bulk import** of affiliate products (check first, then import as drafts) | Done |
 | Customer accounts: register, verify email, password reset, order history | Done |
 | Admin: roles and permissions, staff, MFA (authenticator app), audit log, forced password change | Done |
 | Email (SMTP) configured per storefront in the admin panel, test email, email log | Done |
 | Email outbox: every email is queued, retried automatically (1 min → 3 h) and can be retried from the email log | Done |
 | GST: HSN/SAC and rate per product, CGST+SGST vs IGST by place of supply, buyer GSTIN, tax-inclusive or exclusive prices | Done |
 | Coupons (percent / fixed, cap, minimum order, dates, usage limits), cash on delivery (shop), PIN code delivery check | Done |
-| Product reviews with moderation, wishlist (per customer, per storefront) | Done |
+| Product reviews: customer reviews wait for approval (count shown in the admin menu); staff can add reviews customers sent by WhatsApp, email, phone or in person, labelled with their source and never marked "verified purchase"; wishlist (per customer, per storefront) | Done |
 | Content pages (legal templates: privacy, terms, refunds, shipping, affiliate disclosure, about, contact) and comparison tables (one row per line, cells split by pipes; "Insert comparison table" button in the editor) | Done |
 | SEO: server-rendered titles/meta/Open Graph/JSON-LD, canonical URLs, sitemap.xml, robots.txt, 301 redirects, 404 monitor | Done |
 | Images: 480 px grid thumbnail + 1200 px product-page size generated on upload (older images backfilled at startup), lazy loading | Done |
@@ -91,7 +105,8 @@ Fill in at least:
 # ./scripts/run-dev.sh           # macOS / Linux
 ```
 
-or manually: `cd backend` then `mvn spring-boot:run` (must be started from `backend/`).
+or double-click `start-backend.bat` (Windows), or manually: `cd backend` then `mvn spring-boot:run` (must be started
+from `backend/`; in the main folder Maven reports "there is no POM in this directory").
 
 Open:
 
@@ -129,6 +144,120 @@ them unless you set `DEMO_CATALOG=true` explicitly.
     before launch; the SEO audit flags pages that still contain them.
 11. **SEO → Settings**: home page title and description, Google / Bing verification codes, extra robots.txt rules. Then submit `https://your-domain/sitemap.xml` in Google Search Console.
 12. **SEO → Products**: work through the products with the lowest score. Each check says what to fix.
+13. **CRM → Automations**: the broken-link check runs every night by default. Once email (SMTP) works, turn on the
+    emails you want (welcome, saved-cart reminder, win-back, weekly digest, review request, daily summary).
+    Optionally connect a Telegram channel (see **Automations** below).
+14. **Reviews**: approve or reject customer reviews (the menu shows how many are waiting). Use **Add a review** for
+    feedback customers sent you directly. Only add real customer feedback.
+15. **Products → Images / Videos**: the first image is the main image (use **Make main** to change it). Add short
+    MP4 clips (15-60 seconds) to the products that sell best.
+16. **Web Stories**: create your first story from 3-10 products, then add stories with your own photos and videos.
+
+## CRM
+
+**CRM** in each admin panel turns sign-ups, saved carts, wishlists, partner clicks and sales into a to-do list for
+selling. Each storefront sees only customers who signed up on it or used it.
+
+- **Overview**: customers, email subscribers, hot leads, abandoned carts and repeat-buyer rate; a "contact these
+  first" list ranked by a 0-100 buying-intent score; segment cards with one-click **View** and **Email**.
+- **Segments** (automatic): hot leads, abandoned carts, clicked but no sale, wishlist never bought, new sign-ups,
+  first-time buyers, repeat customers, VIP (3+ purchases), at risk (60-180 days since last purchase), lapsed, and
+  email subscribers. Partner sales reported for a customer's affiliate clicks count as purchases.
+- **Customer profile**: activity timeline (orders, cart, wishlist, partner clicks and sales, reviews, emails),
+  suggested next step, tags, private staff notes, follow-up tasks, and email / call / WhatsApp links.
+- **Campaigns**: plain-text emails to a segment with `{name}`, `{store}`, `{link}` and `{coupon}`, ready-made
+  templates, a live preview, test send, and results counted for 7 days after sending (partner clicks and sales,
+  commission, orders, revenue, coupon use).
+- **Automations** (see below): customer emails that send themselves, plus store upkeep.
+
+**Consent:** marketing email only goes to customers who opted in, per storefront: the unticked "email me offers"
+box at sign-up, or **My account → Email preferences**. Staff cannot subscribe anyone. Every marketing email says why
+it was sent and ends with a signed one-click unsubscribe link (`/account/unsubscribe.html`); the link is signed
+with `APP_ENCRYPTION_KEY`, so keep that key stable. Order and account emails are not affected.
+
+**Roles:** master admins can do everything; order managers and support staff can view the CRM and add notes, tags
+and tasks; only master admins send campaigns and change automations; catalog managers do not see customer data.
+
+The CRM builds segments in memory from one aggregate query, which suits stores with up to a few tens of thousands
+of customers.
+
+## Automations
+
+**CRM → Automations** in each admin. Everything is free: it runs inside the app and uses your own SMTP mailbox and,
+optionally, a free Telegram bot. Each automation is off until you turn it on, except the link check.
+
+- **Customer emails** (checked hourly; only to customers who opted in; at most one marketing email per customer per
+  run): welcome email with this week's top deals; saved-cart reminder after N hours (at most once per 3 days);
+  win-back after N days without a purchase (at most once per 90 days); weekly deals digest on a chosen day; review
+  request N days after a partner sale or delivered order.
+- **Store upkeep**: every night at 3:30 (India time) each live affiliate link is checked. A link is paused only after
+  two checks in a row return "not found" (404/410), and nothing is paused when many links fail at once (that is usually
+  a network problem). **Check links now** runs it immediately. The **daily summary** emails master admins clicks,
+  sales, new subscribers, broken links, stale prices, tasks due and reviews waiting.
+- **Telegram channel**: create a bot with @BotFather, add it as an admin of your channel, paste the bot token and the
+  channel (`@name` or its numeric id) and press **Send test message**. New deals and price drops are posted with a link
+  to the product page on this site (never the raw affiliate link), and never for stores with hidden prices.
+
+## Web Stories
+
+Full-screen, tap-through stories in Google's Web Stories (AMP) format, made in each admin under **Web Stories**:
+
+- **Create from products**: pick 3-10 published products; each becomes a page with its photo, name, first highlight
+  and a "See the deal" swipe-up link to its product page. The first product's photo becomes the cover.
+- **Start from scratch**: upload a cover (cropped to a 3:4 portrait in the browser) and pages with portrait photos or
+  short MP4/WebM videos (up to 60 seconds and 30 MB; the browser captures the poster frame). Each page can have a
+  headline, a line of text and a link to a product.
+- Prices are added when a story is shown, so they are always current (and hidden for stores that hide prices).
+- Publishing needs a cover and at least 3 pages. Published stories appear at the bottom of the home, category,
+  product and content pages, on `/{store}/stories`, and in `sitemap.xml`. Drafts can be previewed by signed-in staff
+  of that storefront (not indexed).
+- Each story is a valid AMP page (checked with Google's AMP validator) with its own Content-Security-Policy that
+  allows the AMP runtime from `cdn.ampproject.org`; all other pages keep the strict policy.
+- Google shows stories only from a public HTTPS domain after crawling them; submit your sitemap in Search Console.
+
+## Sales & demand
+
+**Sales & demand** (right under Dashboard in each admin) answers "what sells and what do shoppers want?" for
+**Today, This week, This month, Last 6 months or This year**, each compared with the same stretch of the period before
+(for example this month so far vs the same days last month).
+
+- **Most in demand**: products ranked by demand points: page view 1, save to wishlist or cart 3, price alert 3,
+  click to the store 5, sale 20. Also shows click rate and a ▲/▼ trend.
+- **Best sellers** (sales reported by your affiliate networks plus paid orders), **Rising fast**, **Top categories**,
+  **Top partner stores**, an activity chart, and a funnel from views to clicks to sales.
+- **What shoppers search for**, and **Searched, but you don't have it**: searches that found nothing are product ideas.
+- **Market research (India)**: links to Google Trends (set to the chosen period), Amazon.in best sellers and
+  movers & shakers, and Flipkart or Udemy sorted by popularity. These are links only; nothing is scraped.
+- Product page views and searches are counted from the day this tool was installed: one view per product per visit,
+  bots ignored, daily totals only (no personal data). Earnings are shown only to staff who can see affiliate data.
+
+## Buying guides
+
+Admin → **Buying guides** → **New guide**. "Start from an outline" fills in a proven structure (quick answer, top picks,
+one section per product, comparison table, how to choose, FAQs). **Insert product** adds a product card (photo, price,
+buy button); **Insert products row** adds 2-4 "top picks" side by side. Guides need a few sentences before they can be
+published, can be previewed as drafts, and appear on `/{store}/guides`, on the home page, in the menu, on the product
+pages they mention ("Featured in our guides") and in `sitemap.xml`. Changing the address of a published guide adds a
+301 redirect automatically.
+
+## Installable app, analytics and cookie consent
+
+- Both storefronts can be installed like an app ("Install the app" in the footer and phone menu, or the browser's
+  "Add to Home screen"). The app opens full screen with your logo, and shows a friendly page when there is no internet.
+  The admin, accounts, checkout and the API are never cached. Installation needs HTTPS (or localhost).
+- Settings → Store details: **Google Analytics 4 ID** (`G-…`) and **Meta Pixel ID**. They load only after a shopper
+  presses "Accept all" in the cookie banner ("Only necessary" loads nothing). Shoppers can change their choice under
+  "Cookie settings" in the footer. Tracked: page views, product views, searches, clicks to partner stores, newsletter
+  sign-ups and price alerts. Only storefront pages allow the Google/Meta script hosts; the admin keeps the strict policy.
+
+## Importing products from a spreadsheet
+
+Admin → **Import products** → **Download template**, fill it in Excel or Google Sheets (save as "CSV UTF-8"), then
+**Check file**. Columns: `title` and `link` (your affiliate link) are needed; `price` and `mrp` in rupees, `category`
+(must exist), `brand`, `store`, `summary` and `highlights` (separated by `|`) are optional. Nothing is saved by the
+check; every problem is explained per row. New partner stores must be approved with one tick. Each product is added as
+a **draft**: add a photo and press Publish (photos are not copied from other sites; Amazon's rules don't allow it).
+Up to 500 products per file; products already in the catalog (same title) are skipped.
 
 ## SEO
 
@@ -163,8 +292,14 @@ H2 database in MySQL mode: admin setup, publish rules, stock, affiliate redirect
 failure → retry → success, invoice, shipping, a digital license-key product delivered to the customer library,
 coupon + cash on delivery through to delivery, wishlist, sessions stored in the database, admin role permissions
 (Support / Catalog manager cannot write outside their role), `/go` redirects with click references, conversion
-postbacks (token, idempotency, click matching), stale partner prices and price-drop alerts. No MySQL is needed
-for tests. The jar is written to `backend/target/hybrid-platform.jar`.
+postbacks (token, idempotency, click matching), stale partner prices and price-drop alerts, and the CRM (consent at
+sign-up, per-storefront customer data, segments and intent score, notes / tags / tasks and their permissions,
+saved-cart reminders sent once, campaigns that reach subscribers only, results, signed unsubscribe links), deal
+pages and store comparison, automations (link checker against a fake partner site, Telegram posts, welcome / digest /
+review-request emails, daily summary), reviews (approval queue, staff-added reviews labelled with their source,
+permissions), product videos (content checks, poster, limits, VideoObject markup) and Web Stories (publishing rules,
+AMP page, previews, sitemap, renamed links, one-click stories from products, permissions). No MySQL is needed for
+tests. The jar is written to `backend/target/hybrid-platform.jar`.
 
 **CI:** `.github/workflows/ci.yml` runs the tests and a JavaScript syntax check on every push and pull request, and
 starts the app against a real MySQL 8 to check the migrations (including the full-text index), robots.txt and the
@@ -235,6 +370,9 @@ docs/        Architecture notes and decision records
   to a shared store (e.g. Redis) and files to object storage (e.g. S3).
 - MFA setup shows a setup key / `otpauth://` URI to enter in the authenticator app (no QR code image).
 - Image renditions are generated for JPEG and PNG; WebP uploads are served at their original size.
+- Videos are stored as uploaded (no transcoding): use MP4 (H.264). The admin warns when the browser cannot play a file.
+- Customers must sign in to write a review (keeps spam out of the approval queue).
+- Web Stories load Google's AMP runtime from `cdn.ampproject.org`; story views are not counted in the admin yet.
 - Coupon start / end dates can be changed but not cleared once set (deactivate the coupon instead).
 - Ranked full-text search needs MySQL; on other databases (tests use H2) search falls back to simple matching.
 - The server error log is shared by the application; each admin only sees errors from its own storefront's URLs.

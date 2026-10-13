@@ -33,6 +33,10 @@ public class AffiliateMerchant {
     @Column(nullable = false)
     private boolean active = true;
 
+    /** Never show this merchant's prices (Amazon only allows prices fetched from its own API). */
+    @Column(name = "hide_prices", nullable = false)
+    private boolean hidePrices;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -43,8 +47,17 @@ public class AffiliateMerchant {
         this.storefront = storefront;
         this.name = name;
         this.domain = domain;
+        this.hidePrices = pricesRestricted(domain);
         this.createdAt = Instant.now();
     }
+
+    /** Domains whose affiliate rules forbid showing manually entered prices. */
+    public static boolean pricesRestricted(String domain) {
+        return domain != null && (domain.startsWith("amazon.") || domain.startsWith("amzn.") || domain.equals("a.co"));
+    }
+
+    public boolean isHidePrices() { return hidePrices; }
+    public void setHidePrices(boolean hidePrices) { this.hidePrices = hidePrices; }
 
     public boolean matchesHost(String host) {
         return host.equals(domain) || host.endsWith("." + domain);

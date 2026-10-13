@@ -40,15 +40,26 @@ public class CustomerAuthService {
 
     @Transactional
     public CustomerPrincipal register(String email, String password, String fullName, Storefront storefront) {
+        return register(email, password, fullName, storefront, false);
+    }
+
+    @Transactional
+    public CustomerPrincipal register(String email, String password, String fullName, Storefront storefront,
+                                      boolean marketingOptIn) {
         String normalized = normalizeEmail(email);
         PasswordPolicy.check(password);
         if (customers.existsByEmailIgnoreCase(normalized)) {
             throw ApiException.conflict("EMAIL_IN_USE", "An account with this email already exists");
         }
-        Customer customer = customers.save(new Customer(normalized, passwordEncoder.encode(password), fullName.trim()));
+        Customer created = new Customer(normalized, passwordEncoder.encode(password), fullName.trim());
+        created.setSignupStorefront(storefront);
+        Customer customer = customers.save(created);
         String token = issueToken(customer.getId(), AuthToken.Purpose.EMAIL_VERIFY, VERIFY_TTL);
         events.publishEvent(new IdentityEvents.CustomerRegistered(customer.getId(), customer.getEmail(),
                 customer.getFullName(), token, storefront));
+        if (marketingOptIn && storefront != null) {
+            events.publishEvent(new IdentityEvents.MarketingOptedIn(customer.getId(), storefront));
+        }
         return toPrincipal(customer);
     }
 

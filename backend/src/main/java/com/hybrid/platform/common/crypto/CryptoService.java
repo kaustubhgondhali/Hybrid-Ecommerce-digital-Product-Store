@@ -8,12 +8,14 @@ import org.springframework.core.env.Profiles;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.Cipher;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.util.Base64;
 
 /**
@@ -90,5 +92,23 @@ public class CryptoService {
 
     public String saltedHash(String value) {
         return value == null ? null : Hashing.sha256Hex(hashSalt + ":" + value);
+    }
+
+    /** URL-safe HMAC-SHA256 signature (keyed from the encryption key) for links that must not be forgeable. */
+    public String sign(String value) {
+        try {
+            byte[] macKey = MessageDigest.getInstance("SHA-256").digest(
+                    ByteBuffer.allocate(5 + key.getEncoded().length).put("hmac:".getBytes(StandardCharsets.UTF_8)).put(key.getEncoded()).array());
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(macKey, "HmacSHA256"));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("Signing failed", e);
+        }
+    }
+
+    public boolean verify(String value, String signature) {
+        return signature != null && MessageDigest.isEqual(sign(value).getBytes(StandardCharsets.UTF_8),
+                signature.getBytes(StandardCharsets.UTF_8));
     }
 }

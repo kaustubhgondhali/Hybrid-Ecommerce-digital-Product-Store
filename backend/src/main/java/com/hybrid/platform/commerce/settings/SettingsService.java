@@ -24,6 +24,8 @@ public class SettingsService {
     private static final Pattern HSN = Pattern.compile("^\\d{4,8}$");
     private static final Pattern GSTIN = Pattern.compile("^\\d{2}[A-Z]{5}\\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$");
     private static final Pattern PIN = Pattern.compile("^\\d{6}$");
+    private static final Pattern GA4_ID = Pattern.compile("^G-[A-Z0-9]{4,16}$");
+    private static final Pattern PIXEL_ID = Pattern.compile("^\\d{10,20}$");
 
     public record StoreSettingsView(String storefront, String storeName, String supportEmail, int taxRateBps,
                                     String sellerLegalName, String sellerAddress, String sellerTaxId,
@@ -31,7 +33,8 @@ public class SettingsService {
                                     String defaultHsnSac, boolean reviewsAutoApprove, boolean codEnabled,
                                     Long codMaxMinor, long codFeeMinor, String pincodeMode, String pincodeList,
                                     String codPincodeList, String deliveryEstimate, boolean affiliateOnly,
-                                    Instant updatedAt) {
+                                    Instant updatedAt, String whatsappNumber, Long dealOfDayProductId, Instant dealOfDayEndsAt,
+                                    String ga4Id, String metaPixelId) {
     }
 
     public record StoreSettingsInput(String storeName, String supportEmail, Integer taxRateBps, String sellerLegalName,
@@ -39,7 +42,7 @@ public class SettingsService {
                                      String sellerStateCode, Boolean pricesIncludeTax, String defaultHsnSac,
                                      Boolean reviewsAutoApprove, Boolean codEnabled, Long codMaxMinor, Long codFeeMinor,
                                      String pincodeMode, String pincodeList, String codPincodeList,
-                                     String deliveryEstimate) {
+                                     String deliveryEstimate, String whatsappNumber, String ga4Id, String metaPixelId) {
     }
 
     public record ShippingMethodView(Long id, String name, long rateMinor, Long freeAboveMinor, boolean active, int sortOrder) {
@@ -50,7 +53,7 @@ public class SettingsService {
 
     public record PublicStoreInfo(String storefront, String storeName, String supportEmail, String currency,
                                   int taxRateBps, boolean pricesIncludeTax, boolean codEnabled, boolean affiliateOnly,
-                                  List<ShippingMethodView> shippingMethods) {
+                                  List<ShippingMethodView> shippingMethods, String whatsappNumber, String ga4Id, String metaPixelId) {
     }
 
     private final StoreSettingsRepository settings;
@@ -82,7 +85,47 @@ public class SettingsService {
         StoreSettings s = entity(sf);
         return new PublicStoreInfo(sf.path(), s.getStoreName(), s.getSupportEmail(), currency, s.getTaxRateBps(),
                 s.isPricesIncludeTax(), !props.affiliateOnly() && s.isCodEnabled() && sf == Storefront.SHOP,
-                props.affiliateOnly(), activeShippingMethods(sf));
+                props.affiliateOnly(), activeShippingMethods(sf), s.getWhatsappNumber(), s.getGa4Id(), s.getMetaPixelId());
+    }
+
+    /**
+     * WhatsApp chat number: digits with country code. A 10-digit Indian mobile number gets 91 in front; blank removes
+     * the chat button.
+     */
+    /** Analytics IDs: trimmed and upper-cased; blank removes the tracker. */
+    static String trackingId(String raw, Pattern format, String code, String message) {
+        String v = raw.strip().toUpperCase(java.util.Locale.ROOT);
+        if (v.isEmpty()) return null;
+        if (!format.matcher(v).matches()) throw ApiException.badRequest(code, message);
+        return v;
+    }
+
+    static String whatsapp(String raw) {
+        String digits = raw.replaceAll("[\\s()+\\-]", "");
+        if (digits.isEmpty()) return null;
+        if (!digits.matches("\\d{10,15}")) {
+            throw ApiException.badRequest("INVALID_WHATSAPP", "Enter the WhatsApp number with country code, e.g. +91 98765 43210");
+        }
+        return digits.length() == 10 ? "91" + digits : digits;
+    }
+
+    /** Sets (or with a null product, clears) the Deal of the Day shown with a countdown on the home page. */
+    @Transactional
+    public StoreSettingsView setDealOfDay(AdminPrincipal admin, Long productId, Instant endsAt) {
+        StoreSettings s = entity(admin.storefront());
+        if (productId == null) {
+            s.setDealOfDay(null, null);
+        } else {
+            if (endsAt == null || !endsAt.isAfter(Instant.now())) {
+                throw ApiException.badRequest("DEAL_END_REQUIRED", "Choose when the deal ends (in the future)");
+            }
+            if (endsAt.isAfter(Instant.now().plus(java.time.Duration.ofDays(31)))) {
+                throw ApiException.badRequest("DEAL_TOO_LONG", "A Deal of the Day can run for up to 31 days");
+            }
+            s.setDealOfDay(productId, endsAt);
+        }
+        audit.record(admin, "DEAL_OF_DAY_SET", "StoreSettings", null, productId == null ? "cleared" : productId + " until " + endsAt);
+        return view(s);
     }
 
     @Transactional
@@ -151,6 +194,11 @@ public class SettingsService {
         if (in.pincodeList() != null) s.setPincodeList(pinList(in.pincodeList()));
         if (in.codPincodeList() != null) s.setCodPincodeList(pinList(in.codPincodeList()));
         if (in.deliveryEstimate() != null) s.setDeliveryEstimate(limit(in.deliveryEstimate(), 80));
+        if (in.whatsappNumber() != null) s.setWhatsappNumber(whatsapp(in.whatsappNumber()));
+        if (in.ga4Id() != null) s.setGa4Id(trackingId(in.ga4Id(), GA4_ID, "INVALID_GA4_ID",
+                "Google Analytics ID looks like G-XXXXXXXXXX (Admin \u2192 Data streams in Google Analytics)"));
+        if (in.metaPixelId() != null) s.setMetaPixelId(trackingId(in.metaPixelId(), PIXEL_ID, "INVALID_PIXEL_ID",
+                "Meta Pixel ID is a number of 10 to 20 digits (Events Manager \u2192 Data sources)"));
         if (in.invoicePrefix() != null) {
             String prefix = in.invoicePrefix().trim().toUpperCase();
             if (!PREFIX.matcher(prefix).matches()) {
@@ -270,7 +318,8 @@ public class SettingsService {
                 s.getSellerLegalName(), s.getSellerAddress(), s.getSellerTaxId(), s.getInvoicePrefix(),
                 s.getSellerStateCode(), s.isPricesIncludeTax(), s.getDefaultHsnSac(), s.isReviewsAutoApprove(),
                 s.isCodEnabled(), s.getCodMaxMinor(), s.getCodFeeMinor(), s.getPincodeMode(), s.getPincodeList(),
-                s.getCodPincodeList(), s.getDeliveryEstimate(), props.affiliateOnly(), s.getUpdatedAt());
+                s.getCodPincodeList(), s.getDeliveryEstimate(), props.affiliateOnly(), s.getUpdatedAt(),
+                s.getWhatsappNumber(), s.getDealOfDayProductId(), s.getDealOfDayEndsAt(), s.getGa4Id(), s.getMetaPixelId());
     }
 
     private static ShippingMethodView view(ShippingMethod m) {

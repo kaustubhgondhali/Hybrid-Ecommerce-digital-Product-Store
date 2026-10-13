@@ -25,6 +25,8 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration,classpath:db/vendor/{vendor}
+    # V3 was added after V5+ existed on some databases; let Flyway apply it late instead of refusing to start.
+    out-of-order: true
   servlet:
     multipart:
       max-file-size: ${MAX_UPLOAD_SIZE:512MB}

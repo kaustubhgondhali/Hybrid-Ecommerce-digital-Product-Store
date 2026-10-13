@@ -42,9 +42,20 @@ import java.util.Map;
 @EnableMethodSecurity
 public class SecurityConfig {
 
-    private static final String CSP = "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+    // blob: lets the admin preview a chosen video and its captured poster frame before uploading.
+    private static final String CSP = "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; "
             + "font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; "
             + "frame-ancestors 'none'; upgrade-insecure-requests";
+
+    /**
+     * Storefront pages may also load Google Analytics 4 and the Meta Pixel. Their scripts are only added after the
+     * shopper accepts analytics cookies and only when an ID is set in Settings; admin and API responses keep {@link #CSP}.
+     */
+    private static final String STORE_CSP = CSP
+            .replace("img-src 'self' data: blob:", "img-src 'self' data: blob: https://*.google-analytics.com https://*.googletagmanager.com https://www.facebook.com")
+            .replace("script-src 'self'", "script-src 'self' https://*.googletagmanager.com https://connect.facebook.net")
+            .replace("connect-src 'self'", "connect-src 'self' https://*.google-analytics.com https://*.analytics.google.com "
+                    + "https://*.googletagmanager.com https://www.facebook.com https://connect.facebook.net");
 
     /** Deny powerful browser features this store never needs. */
     private static final String PERMISSIONS_POLICY =
@@ -101,6 +112,11 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/api/shop/catalog/**", "/api/digital/catalog/**").permitAll()
                         .requestMatchers("/api/payments/webhooks/**").permitAll()
                         .requestMatchers("/api/*/affiliate/postback").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/marketing/unsubscribe").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/shop/price-alerts", "/api/digital/price-alerts",
+                                "/api/shop/newsletter", "/api/digital/newsletter",
+                                "/api/shop/catalog/products/*/view", "/api/digital/catalog/products/*/view").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/price-alerts/**", "/api/newsletter/**").permitAll()
                         .anyRequest().hasRole("CUSTOMER"));
         return http.build();
     }
@@ -108,12 +124,16 @@ public class SecurityConfig {
     @Bean
     @Order(4)
     public SecurityFilterChain webChain(HttpSecurity http) throws Exception {
-        common(http, SessionAuth.CUSTOMER_KEY);
+        common(http, SessionAuth.CUSTOMER_KEY, STORE_CSP);
         http.authorizeHttpRequests(a -> a.anyRequest().permitAll());
         return http.build();
     }
 
     private void common(HttpSecurity http, String contextKey) throws Exception {
+        common(http, contextKey, CSP);
+    }
+
+    private void common(HttpSecurity http, String contextKey, String policy) throws Exception {
         HttpSessionSecurityContextRepository repo = new HttpSessionSecurityContextRepository();
         repo.setSpringSecurityContextKey(contextKey);
         CookieCsrfTokenRepository csrfRepo = CookieCsrfTokenRepository.withHttpOnlyFalse();
@@ -132,8 +152,8 @@ public class SecurityConfig {
                 .exceptionHandling(e -> e.authenticationEntryPoint(jsonEntryPoint()).accessDeniedHandler(jsonDenied()))
                 .headers(h -> {
                     h.contentSecurityPolicy(csp -> csp.policyDirectives(cookieSecure
-                                    ? CSP
-                                    : CSP.replace("; upgrade-insecure-requests", "")))
+                                    ? policy
+                                    : policy.replace("; upgrade-insecure-requests", "")))
                             .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
                             .referrerPolicy(r -> r.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
                             .contentTypeOptions(Customizer.withDefaults())

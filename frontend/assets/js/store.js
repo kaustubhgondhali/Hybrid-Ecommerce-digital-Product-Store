@@ -10,22 +10,58 @@
     'store-checkout': checkoutPage,
     'store-pay': payPage,
     'store-wishlist': wishlistPage,
-    // content pages are fully rendered by the server; only the header and footer are added here
-    'store-page': async () => {}
+    'store-compare': comparePage,
+    // content pages (and the coupons page) are rendered by the server; only the coupon buttons need wiring here
+    'store-page': async () => wireOfferButtons(main())
   };
 
   document.addEventListener('DOMContentLoaded', async () => {
     const page = document.body.dataset.page;
     try {
-      const ctx = await Site.renderChrome({ search: page === 'store-index' || page === 'store-product' });
+      const ctx = await Site.renderChrome();
       await pages[page](ctx);
+      if (page === 'store-index' || page === 'store-product' || page === 'store-page') storiesStrip(ctx);
+      if (page !== 'store-compare' && page !== 'store-checkout' && page !== 'store-pay') compareTray(ctx.sf);
+      linkNotices();
+      Site.reveal(main());
     } catch (e) {
       Site.pageError(e);
     }
   });
 
+  /** Web Stories at the bottom of store pages: portrait cards that open the full-screen story. */
+  function storiesStrip({ sf, stories }) {
+    if (!stories || !stories.length) return;
+    main().appendChild(el('section', { class: 'container stories-strip reveal', 'aria-label': 'Web Stories' },
+      sectionHead('Web Stories.', 'Quick, swipeable picks.', el('a', { class: 'see-all', href: '/' + sf + '/stories', text: 'See all' })),
+      el('div', { class: 'stories-row' }, stories.map((st) => el('a', { class: 'story-card', href: st.url },
+        st.coverUrl ? el('img', { src: st.coverUrl, alt: '', loading: 'lazy', decoding: 'async' }) : null,
+        el('span', { class: 'story-title', text: st.title }))))));
+  }
+
+  /** Apple-style section title: a bold statement followed by a grey line ("Top deals. Biggest discounts right now."). */
+  function sectionHead(title, subtitle, extra) {
+    return el('div', { class: 'section-head' },
+      el('h2', null, title, subtitle ? el('span', { class: 'sub', text: ' ' + subtitle }) : null), extra || null);
+  }
+
   function main() {
     return document.getElementById('main');
+  }
+
+  /** Latest buying guides (or the guides that show one product); loads after the page and stays empty when there are none. */
+  function guidesSection(sf, productId, title, subtitle) {
+    const holder = el('div', { class: 'guides-holder' });
+    Api.get('/api/' + sf + '/catalog/guides?limit=3' + (productId ? '&product=' + productId : '')).then((list) => {
+      if (!list.length) return;
+      mount(holder, el('section', { class: 'guides-section' }, sectionHead(title, subtitle,
+        el('a', { class: 'see-all', href: '/' + sf + '/guides', text: 'All guides' })),
+        el('div', { class: 'guide-grid' }, list.map((g) => el('a', { class: 'guide-card', href: g.url },
+          el('div', { class: 'guide-cover' }, g.coverUrl ? el('img', { src: g.coverUrl, alt: '', loading: 'lazy', decoding: 'async' }) : null),
+          el('div', { class: 'guide-card-body' }, el('span', { class: 'eyebrow', text: 'Buying guide · ' + g.readMinutes + ' min read' }),
+            el('h3', { text: g.title }), g.summary ? el('p', { class: 'muted small', text: g.summary.length > 140 ? g.summary.slice(0, 137) + '…' : g.summary }) : null))))));
+    }).catch(() => {});
+    return holder;
   }
 
   function isDemoProduct(p) {
@@ -38,14 +74,37 @@
     return !(window.HPP_STORE && window.HPP_STORE.affiliateOnly === false);
   }
 
-  function typeBadge(p) {
-    const parts = [];
-    if (isDemoProduct(p)) parts.push(el('span', { class: 'badge amber', text: 'Demo' }), ' ');
-    parts.push(UI.badge(p.productType === 'DIGITAL' ? 'SHIPPED' : 'DRAFT', p.productType === 'DIGITAL' ? 'Digital' : 'Physical'));
-    if (p.sellingMethod === 'AFFILIATE' || affiliateOnly()) {
-      parts.push(' ', el('span', { class: 'badge purple', text: 'Partner offer' }));
+  function demoBadge(p) {
+    return isDemoProduct(p) ? el('span', { class: 'badge amber', text: 'Demo' }) : null;
+  }
+
+  /** "Price checked today / yesterday / 3 days ago", so shoppers can trust how fresh a price is. */
+  function checkedText(iso) {
+    if (!iso) return null;
+    const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    return 'Price checked ' + (days <= 0 ? 'today' : days === 1 ? 'yesterday' : days + ' days ago');
+  }
+
+  /** Editor's rating in tenths of a star (45 = 4.5). */
+  function expertRating(tenths, label) {
+    const r = tenths / 10;
+    return el('div', { class: 'expert-rating', 'aria-label': (label || 'Our rating') + ': ' + r.toFixed(1) + ' out of 5' },
+      el('span', { class: 'stars', 'aria-hidden': 'true', text: '★'.repeat(Math.floor(r)) + (r % 1 ? '½' : '') }),
+      ' ' + r.toFixed(1) + (label ? ' · ' + label : ''));
+  }
+
+  function priceLine(p) {
+    if (p.priceMinor != null) {
+      return el('div', { class: 'price' }, money(p.priceMinor), p.compareAtMinor ? el('s', { text: money(p.compareAtMinor) }) : null);
     }
-    return parts;
+    return p.checkPrice && p.merchantName ? el('div', { class: 'check-price', text: 'Check price on ' + p.merchantName }) : null;
+  }
+
+  function dealFlag(p, inline) {
+    const cls = 'deal-flag' + (inline ? ' inline' : '');
+    if (p.lowest30d) return el('span', { class: cls, text: 'Lowest in 30 days' });
+    if (p.dropPercent) return el('span', { class: cls, text: 'Price dropped ' + p.dropPercent + '%' });
+    return null;
   }
 
   // ------------------------------------------------------------------ catalog
@@ -54,24 +113,38 @@
     const params = new URLSearchParams(location.search);
     const pathCategory = decodeURIComponent((location.pathname.split('/c/')[1] || '').replace(/\/$/, ''));
     if (pathCategory) params.set('category', pathCategory);
+    const pathStore = decodeURIComponent((location.pathname.split('/store/')[1] || '').replace(/\/$/, ''));
+    if (pathStore) params.set('store', pathStore);
     const page = Math.max(parseInt(params.get('page') || '0', 10) || 0, 0);
     const query = new URLSearchParams();
-    ['q', 'category', 'type', 'method', 'sort'].forEach((k) => { if (params.get(k)) query.set(k, params.get(k)); });
+    ['q', 'category', 'type', 'method', 'sort', 'store', 'minDiscount'].forEach((k) => { if (params.get(k)) query.set(k, params.get(k)); });
+    const priceRange = (params.get('price') || '').split('-');
+    if (priceRange[0]) query.set('minPrice', priceRange[0]);
+    if (priceRange[1]) query.set('maxPrice', priceRange[1]);
     query.set('page', String(page));
     query.set('size', '24');
+    const filtered = ['q', 'category', 'type', 'method', 'store', 'minDiscount', 'price'].some((k) => params.get(k)) || page > 0;
 
-    const [categories, result] = await Promise.all([
+    const [categories, result, home, stores, storeOffers] = await Promise.all([
       Api.get('/api/' + sf + '/catalog/categories'),
-      Api.get('/api/' + sf + '/catalog/products?' + query.toString())
+      Api.get('/api/' + sf + '/catalog/products?' + query.toString()),
+      filtered ? null : Api.get('/api/' + sf + '/catalog/home').catch(() => null),
+      Api.get('/api/' + sf + '/catalog/stores').catch(() => []),
+      params.get('store') ? Api.get('/api/' + sf + '/catalog/offers?store=' + encodeURIComponent(params.get('store'))).catch(() => []) : []
     ]);
     const category = categories.find((c) => c.slug === params.get('category'));
+    const storeFilter = stores.find((st) => st.domain === params.get('store'));
 
     const filterForm = el('form', { class: 'filters', id: 'catalog', method: 'get', action: '/' + sf },
       params.get('q') ? el('input', { type: 'hidden', name: 'q', value: params.get('q') }) : null,
       select('category', [['', 'All categories'], ...categories.map((c) => [c.slug, c.name])], params.get('category')),
-      select('type', [['', 'All types'], ['PHYSICAL', 'Physical'], ['DIGITAL', 'Digital']], params.get('type')),
+      stores.length > 1 ? select('store', [['', 'All stores'], ...stores.map((st) => [st.domain, st.name])], params.get('store')) : null,
+      select('minDiscount', [['', 'Any discount'], ['10', '10% off or more'], ['20', '20% off or more'], ['30', '30% off or more'], ['50', '50% off or more']], params.get('minDiscount')),
+      select('price', [['', 'Any price'], ['-500', 'Under \u20B9500'], ['500-1000', '\u20B9500 \u2013 \u20B91,000'], ['1000-5000', '\u20B91,000 \u2013 \u20B95,000'],
+        ['5000-20000', '\u20B95,000 \u2013 \u20B920,000'], ['20000-', 'Over \u20B920,000']], params.get('price')),
       affiliateOnly() ? null : select('method', [['', 'All offers'], ['DIRECT', 'Sold by us'], ['AFFILIATE', 'Partner offers']], params.get('method')),
-      select('sort', [['', 'Newest'], ['title', 'Name']], params.get('sort')));
+      select('sort', [['', 'Newest first'], ['popular', 'Most popular'], ['price_asc', 'Price: low to high'], ['price_desc', 'Price: high to low'],
+        ['discount', 'Biggest discount'], ['rating', 'Top rated'], ['title', 'Name (A\u2013Z)']], params.get('sort')));
     const go = () => {
       const values = new URLSearchParams();
       new FormData(filterForm).forEach((v, k) => { if (v && k !== 'category') values.set(k, v); });
@@ -82,7 +155,9 @@
     filterForm.addEventListener('submit', (e) => { e.preventDefault(); go(); });
     filterForm.querySelectorAll('select').forEach((s) => s.addEventListener('change', go));
 
-    const heading = params.get('q') ? 'Results for \u201C' + params.get('q') + '\u201D' : category ? category.name : storeName;
+    if (params.get('q')) Site.track('search', { term: params.get('q') });
+    const heading = params.get('q') ? 'Results for \u201C' + params.get('q') + '\u201D' : category ? category.name
+      : storeFilter ? storeFilter.name + ' deals & coupons' : storeName;
     const grid = result.items.length
       ? el('div', { class: 'grid' }, result.items.map((p) => productCard(sf, p)))
       : el('div', { class: 'empty card' }, 'No products found.');
@@ -92,25 +167,105 @@
       el('span', { class: 'muted small', text: 'Page ' + (page + 1) + ' of ' + result.totalPages }),
       page + 1 < result.totalPages ? el('a', { class: 'btn secondary small', href: pageHref(params, page + 1), text: 'Next' }) : null) : null;
 
-    const filtered = ['q', 'category', 'type', 'method'].some((k) => params.get(k)) || page > 0;
-    mount(main(), el('div', { class: 'container' },
-      filtered ? el('h1', { text: heading }) : storeHero(sf, storeName),
-      filtered ? null : el('div', { class: 'section-head' }, el('h2', { text: 'Latest products' })),
-      filterForm, grid, pager));
+    if (filtered) {
+      // Category and search results: a large page title, category pills to jump around, then the grid.
+      const count = result.totalItems === 1 ? '1 deal' : result.totalItems + (affiliateOnly() ? ' deals' : ' products');
+      if (categories.length) filterForm.classList.add('has-pills');
+      mount(main(), el('div', { class: 'container' },
+        el('header', { class: 'page-title' }, el('h1', { text: heading }), el('p', { class: 'muted', text: count })),
+        categoryPills(sf, categories, params.get('category')),
+        offersSection(storeOffers, 'Coupons.', storeFilter ? 'Working codes for ' + storeFilter.name + '.' : null),
+        filterForm, grid, pager));
+      return;
+    }
+    mount(main(), storeHero(sf, storeName), el('div', { class: 'container' },
+      home ? categoryNav(sf, home.categories) : null,
+      home ? dealOfDay(sf, home.dealOfDay) : null,
+      showcase(sf, home && home.featured.length >= 2 ? home.featured : result.items),
+      home ? shelf(sf, 'Top deals.', 'Biggest discounts right now.', home.topDeals) : null,
+      home ? shelf(sf, 'Price drops.', 'Cheaper than last week.', home.priceDrops) : null,
+      home ? shelf(sf, 'Trending now.', 'Most clicked this week.', home.trending) : null,
+      recentShelf(sf, null),
+      el('section', { class: 'latest reveal', id: 'latest' },
+        sectionHead(affiliateOnly() ? 'Latest deals.' : 'Latest products.', affiliateOnly() ? 'Fresh from our partner stores.' : 'New in the store.'),
+        filterForm, grid, pager),
+      guidesSection(sf, null, 'Buying guides.', 'Not sure what to pick? Start here.'),
+      newsletterSection(sf)));
+  }
+
+  /** Category quick links on search and category pages (Apple's "All models · Accessories · ..." row). */
+  function categoryPills(sf, categories, current) {
+    if (!categories.length) return null;
+    return el('nav', { class: 'category-pills', 'aria-label': 'Categories' },
+      el('a', { href: '/' + sf, class: current ? '' : 'active', text: 'All' }),
+      categories.map((c) => el('a', { href: '/' + sf + '/c/' + encodeURIComponent(c.slug), class: c.slug === current ? 'active' : '', text: c.name })));
   }
 
   function storeHero(sf, storeName) {
     const b = Site.BRANDS[sf];
+    const other = sf === 'shop' ? 'digital' : 'shop';
+    const trust = affiliateOnly()
+      ? ['Hand-picked deals', 'Trusted partner stores', 'No extra cost to you']
+      : ['Hand-picked products', 'Secure checkout', 'Fast support'];
     return el('section', { class: 'store-hero' },
-      el('div', null,
-        el('div', { class: 'eyebrow', text: b.eyebrow }),
-        el('h1', null, b.headline[0], el('span', { class: 'accent', text: b.headline[1] }), b.headline[2]),
-        el('p', { text: b.tagline }),
-        el('div', { class: 'actions mt' },
-          el('a', { class: 'btn', href: '#catalog', text: affiliateOnly() ? 'Browse partner deals' : 'Shop now' }),
-          el('a', { class: 'btn secondary', href: '/' + (sf === 'shop' ? 'digital' : 'shop'),
-            text: 'Visit ' + Site.STOREFRONTS[sf === 'shop' ? 'digital' : 'shop'] }))),
-      el('img', { class: 'hero-logo', src: b.logo, alt: storeName }));
+      el('div', { class: 'hero-copy' },
+        el('p', { class: 'eyebrow', text: b.eyebrow }),
+        el('h1', null, b.headline[0], el('span', { class: 'accent', text: b.headline[1] }), b.headline[2] + '.'),
+        el('p', { class: 'hero-sub', text: b.tagline }),
+        el('div', { class: 'cta-row' },
+          el('a', { class: 'btn', href: '#latest', text: affiliateOnly() ? 'See today\u2019s deals' : 'Shop now' }),
+          el('a', { class: 'btn secondary', href: '/' + other, text: 'Visit ' + Site.STOREFRONTS[other] })),
+        el('ul', { class: 'trust-chips' }, trust.map((t) => el('li', { text: t })))),
+      el('div', { class: 'hero-art' }, Site.liveMark(storeName)));
+  }
+
+  /** Auto-advancing slider of featured deals that have an image (needs at least two to be worth showing). */
+  function showcase(sf, items) {
+    const picks = items.filter((p) => p.imageUrl).slice(0, 8);
+    if (picks.length < 2) return null;
+    const slides = picks.map((p) => el('a', { class: 'showcase-slide', href: '/' + sf + '/p/' + encodeURIComponent(p.slug) },
+      el('div', { class: 'showcase-body' },
+        el('div', { class: 'card-meta' }, demoBadge(p), p.merchantName ? el('span', { class: 'merchant', text: p.merchantName }) : null, dealFlag(p, true)),
+        el('h3', { class: 'showcase-title', text: p.title }),
+        p.summary ? el('p', { text: p.summary }) : null,
+        priceLine(p),
+        p.priceCheckedAt ? el('div', { class: 'fresh', text: checkedText(p.priceCheckedAt) }) : null,
+        el('div', { class: 'cta-row' }, el('span', { class: 'btn small', text: p.sellingMethod === 'AFFILIATE' ? 'See the deal' : 'View product' }),
+          el('span', { class: 'link-more', text: 'Learn more' }))),
+      el('div', { class: 'showcase-media' }, el('img', { src: p.imageUrl, alt: '', decoding: 'async' }),
+        p.discountPercent ? el('span', { class: 'deal-badge', text: '-' + p.discountPercent + '%' }) : null)));
+    return el('section', { class: 'showcase-section reveal' },
+      sectionHead('Featured.', 'Today\u2019s best picks.'),
+      carousel(slides, { className: 'showcase', label: 'Featured deals', dots: true, toggle: true }).root);
+  }
+
+  /** A row of cards that scrolls sideways, with round arrow buttons on larger screens (Apple Store "shelf"). */
+  function shelf(sf, title, subtitle, items) {
+    if (!items || !items.length) return null;
+    const track = el('div', { class: 'shelf-track' }, items.map((p) => productCard(sf, p)));
+    const prev = el('button', { class: 'shelf-arrow prev', type: 'button', 'aria-label': 'Scroll back', text: '\u2039', hidden: true });
+    const next = el('button', { class: 'shelf-arrow next', type: 'button', 'aria-label': 'Scroll forward', text: '\u203A' });
+    const step = (dir) => track.scrollBy({ left: dir * Math.max(260, track.clientWidth * 0.8), behavior: 'smooth' });
+    prev.addEventListener('click', () => step(-1));
+    next.addEventListener('click', () => step(1));
+    const update = () => {
+      prev.hidden = track.scrollLeft <= 4;
+      next.hidden = track.scrollLeft + track.clientWidth >= track.scrollWidth - 4;
+    };
+    track.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    setTimeout(update, 0);
+    return el('section', { class: 'shelf deal-section reveal' }, sectionHead(title, subtitle), el('div', { class: 'shelf-wrap' }, track, prev, next));
+  }
+
+  /** Apple Store-style row of category tiles with a picture (or initial) and a name. */
+  function categoryNav(sf, tiles) {
+    if (!tiles || !tiles.length) return null;
+    return el('nav', { class: 'category-nav', 'aria-label': 'Shop by category' },
+      el('div', { class: 'category-tiles' }, tiles.map((t) => el('a', { class: 'category-tile', href: '/' + sf + '/c/' + encodeURIComponent(t.slug) },
+        t.imageUrl ? el('img', { src: t.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : el('span', { class: 'tile-ph', text: t.name.charAt(0) }),
+        el('span', { class: 'tile-name', text: t.name }),
+        el('span', { class: 'tile-count', text: t.products + (t.products === 1 ? ' deal' : ' deals') })))));
   }
 
   function pageHref(params, page) {
@@ -125,65 +280,552 @@
       options.map(([value, text]) => el('option', { value, text, selected: (current || '') === value })));
   }
 
+  /**
+   * Deal card: discount and "lowest price" flags on the image, store name, price (or "Check price on ..." when the
+   * store does not allow showing it), how fresh the price is, and a direct Buy button for partner offers.
+   */
   function productCard(sf, p) {
     const href = '/' + sf + '/p/' + encodeURIComponent(p.slug);
-    return el('a', { class: 'product-card', href },
-      el('div', { class: 'thumb' }, p.imageUrl ? el('img', { src: p.imageUrl, alt: p.title, loading: 'lazy', decoding: 'async' }) : 'No image'),
+    const partner = p.sellingMethod === 'AFFILIATE';
+    return el('div', { class: 'product-card' },
+      el('a', { class: 'thumb', href, tabindex: '-1', 'aria-hidden': 'true' },
+        p.imageUrl ? el('img', { src: p.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : el('span', { text: 'No image' }),
+        p.discountPercent ? el('span', { class: 'deal-badge', text: '-' + p.discountPercent + '%' }) : null,
+        dealFlag(p)),
+      compareToggle(sf, p, 'card-compare'),
       el('div', { class: 'body' },
-        el('div', null, typeBadge(p)),
-        el('div', { class: 'title', text: p.title }),
-        p.summary ? el('div', { class: 'muted small', text: p.summary }) : null,
+        el('div', { class: 'card-meta' }, demoBadge(p),
+          partner && p.merchantName ? el('span', { class: 'merchant', text: p.merchantName }) : null,
+          p.offerCount > 1 ? el('span', { class: 'muted', text: p.offerCount + ' stores' }) : null),
+        el('a', { class: 'title', href, text: p.title }),
+        p.expertRating ? expertRating(p.expertRating) : null,
         el('div', { class: 'spacer' }),
-        p.priceMinor != null ? el('div', { class: 'price' }, money(p.priceMinor),
-          p.compareAtMinor ? el('s', { text: money(p.compareAtMinor) }) : null) : null,
-        p.merchantName ? el('div', { class: 'muted small', text: 'Sold by ' + p.merchantName }) : null,
-        !affiliateOnly() && p.sellingMethod === 'DIRECT' && p.inStock === false
-          ? el('div', { class: 'small', text: 'Out of stock' }) : null));
+        priceLine(p),
+        p.priceCheckedAt ? el('div', { class: 'fresh', text: checkedText(p.priceCheckedAt) }) : null,
+        !partner && p.inStock === false ? el('div', { class: 'small', text: 'Out of stock' }) : null,
+        partner && p.goUrl
+          ? el('a', { class: 'btn block', href: p.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
+            title: 'Buy on ' + (p.merchantName || 'partner store'),
+            // Short store names fit the pill ("Buy on Croma"); long ones are already named just above the title.
+            text: p.merchantName && p.merchantName.length <= 16 ? 'Buy on ' + p.merchantName : 'Buy now' })
+          : el('a', { class: 'btn secondary block', href, text: 'View details' })));
+  }
+
+  // ------------------------------------------------------------------ compare (up to 4 products, kept in this browser)
+
+  const compareKey = (sf) => 'hpp.compare.' + sf;
+
+  function compareList(sf) {
+    try {
+      const v = JSON.parse(localStorage.getItem(compareKey(sf)) || '[]');
+      return Array.isArray(v) ? v.filter((x) => x && x.slug).slice(0, 4) : [];
+    } catch (e) { return []; }
+  }
+
+  function saveCompare(sf, list) {
+    try { localStorage.setItem(compareKey(sf), JSON.stringify(list.slice(0, 4))); } catch (e) { /* storage blocked */ }
+    document.dispatchEvent(new CustomEvent('compare:change'));
+  }
+
+  function compareToggle(sf, p, cls) {
+    const btn = el('button', { type: 'button', class: 'compare-toggle ' + (cls || '') });
+    const render = () => {
+      const on = compareList(sf).some((x) => x.slug === p.slug);
+      btn.textContent = on ? '✓ Comparing' : '+ Compare';
+      btn.setAttribute('aria-pressed', String(on));
+      btn.classList.toggle('on', on);
+    };
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let list = compareList(sf);
+      if (list.some((x) => x.slug === p.slug)) {
+        list = list.filter((x) => x.slug !== p.slug);
+      } else if (list.length >= 4) {
+        UI.toast('You can compare up to 4 products. Remove one first.', 'error');
+        return;
+      } else {
+        const image = p.imageUrl || (p.images && p.images[0] ? p.images[0].thumbUrl || p.images[0].url : null);
+        list = [...list, { slug: p.slug, title: p.title, imageUrl: image }];
+      }
+      saveCompare(sf, list);
+    });
+    document.addEventListener('compare:change', render);
+    render();
+    return btn;
+  }
+
+  /** Floating bar listing the products picked for comparison. */
+  function compareTray(sf) {
+    const tray = el('div', { class: 'compare-tray', role: 'region', 'aria-label': 'Compare products', hidden: true });
+    const render = () => {
+      const list = compareList(sf);
+      tray.hidden = list.length === 0;
+      const clear = el('button', { type: 'button', class: 'btn ghost small', text: 'Clear' });
+      clear.addEventListener('click', () => saveCompare(sf, []));
+      const go = el('a', { class: 'btn small' + (list.length < 2 ? ' disabled' : ''), href: '/' + sf + '/compare', text: 'Compare now' });
+      go.addEventListener('click', (e) => {
+        if (list.length < 2) { e.preventDefault(); UI.toast('Add one more product to compare.', 'error'); }
+      });
+      mount(tray,
+        el('div', { class: 'compare-thumbs' }, list.map((x) => x.imageUrl
+          ? el('img', { src: x.imageUrl, alt: x.title, title: x.title })
+          : el('span', { class: 'compare-ph', title: x.title, text: x.title.charAt(0) }))),
+        el('span', { class: 'compare-count', text: list.length === 1 ? 'Add one more to compare' : list.length + ' products' }),
+        clear, go);
+    };
+    document.addEventListener('compare:change', render);
+    window.addEventListener('storage', (e) => { if (e.key === compareKey(sf)) render(); });
+    document.body.appendChild(tray);
+    render();
+  }
+
+  /** Side-by-side comparison (Flipkart / Apple style): price, store, rating, highlights, specifications, pros, cons. */
+  async function comparePage({ sf, storeName }) {
+    document.title = 'Compare | ' + storeName;
+    const shared = (UI.param('p') || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const slugs = (shared.length ? shared : compareList(sf).map((x) => x.slug)).slice(0, 4);
+    const header = el('header', { class: 'page-title' }, el('h1', { text: 'Compare.' }),
+      el('p', { class: 'muted', text: 'Side by side, so you can pick the right one.' }));
+    if (slugs.length < 2) {
+      mount(main(), el('div', { class: 'container' }, header,
+        el('div', { class: 'card empty' }, 'Pick at least two products with “+ Compare” to see them side by side. ',
+          el('a', { href: '/' + sf, text: 'Browse deals' }))));
+      return;
+    }
+    const products = (await Promise.all(slugs.map((s) => Api.get('/api/' + sf + '/catalog/products/' + encodeURIComponent(s)).catch(() => null))))
+      .filter(Boolean);
+    const specNames = [];
+    products.forEach((p) => (p.specs || []).forEach((sp) => { if (!specNames.includes(sp.name)) specNames.push(sp.name); }));
+    const list = (items) => items && items.length ? el('ul', null, items.map((x) => el('li', { text: x }))) : el('span', { class: 'muted', text: '—' });
+    const row = (label, render) => el('tr', null, el('th', { scope: 'row', text: label }), products.map((p) => el('td', null, render(p))));
+    const remove = (p) => {
+      const b = el('button', { type: 'button', class: 'btn ghost small', text: 'Remove' });
+      b.addEventListener('click', () => {
+        saveCompare(sf, compareList(sf).filter((x) => x.slug !== p.slug));
+        location.href = '/' + sf + '/compare';
+      });
+      return b;
+    };
+    const head = el('tr', null, el('th', { scope: 'col' }), products.map((p) => el('th', { scope: 'col', class: 'compare-product' },
+      el('a', { href: '/' + sf + '/p/' + encodeURIComponent(p.slug) },
+        p.images.length ? el('img', { src: p.images[0].thumbUrl || p.images[0].url, alt: '' }) : null,
+        el('span', { text: p.title })),
+      p.affiliate ? el('a', { class: 'btn small', href: p.affiliate.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
+        text: 'Buy on ' + p.affiliate.merchantName }) : null,
+      shared.length ? null : remove(p))));
+    const shareUrl = location.origin + '/' + sf + '/compare?p=' + products.map((p) => encodeURIComponent(p.slug)).join(',');
+    const copy = el('button', { type: 'button', class: 'btn secondary small', text: 'Copy link to this comparison' });
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(shareUrl); UI.toast('Link copied', 'success'); } catch (e) { UI.toast(shareUrl, 'success'); }
+    });
+    mount(main(), el('div', { class: 'container' }, header, el('div', { class: 'actions mb' }, copy),
+      el('div', { class: 'table-wrap compare-wrap' }, el('table', { class: 'compare-table' },
+        el('thead', null, head),
+        el('tbody', null,
+          row('Price', (p) => p.affiliate
+            ? (p.affiliate.displayPriceMinor != null ? el('strong', { text: money(p.affiliate.displayPriceMinor) }) : el('span', { class: 'muted', text: 'Check price' }))
+            : p.variants.length && p.variants[0].priceMinor != null ? el('strong', { text: money(p.variants[0].priceMinor) }) : '—'),
+          row('Best store', (p) => p.affiliate ? p.affiliate.merchantName + (p.offers.length > 1 ? ' (' + p.offers.length + ' stores)' : '') : 'Sold here'),
+          row('Our rating', (p) => p.expertRating ? expertRating(p.expertRating) : el('span', { class: 'muted', text: '—' })),
+          row('Highlights', (p) => list(p.highlights)),
+          specNames.map((name) => row(name, (p) => {
+            const sp = (p.specs || []).find((x) => x.name === name);
+            return sp ? sp.value : el('span', { class: 'muted', text: '—' });
+          })),
+          row('What we like', (p) => list(p.pros)),
+          row('Keep in mind', (p) => list(p.cons)),
+          row('Our verdict', (p) => p.verdict || el('span', { class: 'muted', text: '—' })))))));
+  }
+
+  // ------------------------------------------------------------------ recently viewed (kept in this browser)
+
+  const recentKey = (sf) => 'hpp.recent.' + sf;
+
+  function recentIds(sf) {
+    try {
+      const v = JSON.parse(localStorage.getItem(recentKey(sf)) || '[]');
+      return Array.isArray(v) ? v.filter((x) => Number.isInteger(x)) : [];
+    } catch (e) { return []; }
+  }
+
+  function rememberViewed(sf, id) {
+    try { localStorage.setItem(recentKey(sf), JSON.stringify([id, ...recentIds(sf).filter((x) => x !== id)].slice(0, 12))); } catch (e) { /* storage blocked */ }
+  }
+
+  /** Counts one page view per product per visit for the admin's Sales & demand report (no personal data). */
+  function countView(sf, slug) {
+    const key = 'hpp.viewed.' + sf + '.' + slug;
+    try { if (sessionStorage.getItem(key)) return; sessionStorage.setItem(key, '1'); } catch (e) { /* storage blocked: count anyway */ }
+    Api.post('/api/' + sf + '/catalog/products/' + encodeURIComponent(slug) + '/view').catch(() => {});
+  }
+
+  /** "Recently viewed." shelf; loads after the page so it never slows it down. */
+  function recentShelf(sf, excludeId) {
+    const holder = el('div', { class: 'recent-holder' });
+    const min = excludeId ? 1 : 2;
+    const ids = recentIds(sf).filter((x) => x !== excludeId);
+    if (ids.length < min) return holder;
+    Api.get('/api/' + sf + '/catalog/cards?ids=' + ids.join(',')).then((cards) => {
+      if (cards.length < min) return;
+      mount(holder, shelf(sf, 'Recently viewed.', 'Pick up where you left off.', cards));
+      Site.reveal(holder);
+    }).catch(() => {});
+    return holder;
+  }
+
+  // ------------------------------------------------------------------ share, social proof, specifications
+
+  function shareRow(p) {
+    const url = location.origin + location.pathname;
+    const enc = encodeURIComponent;
+    const links = [
+      ['WhatsApp', 'https://wa.me/?text=' + enc(p.title + ' ' + url)],
+      ['Telegram', 'https://t.me/share/url?url=' + enc(url) + '&text=' + enc(p.title)],
+      ['X', 'https://twitter.com/intent/tweet?url=' + enc(url) + '&text=' + enc(p.title)],
+      ['Facebook', 'https://www.facebook.com/sharer/sharer.php?u=' + enc(url)]
+    ];
+    const copy = el('button', { type: 'button', class: 'share-btn', text: 'Copy link' });
+    copy.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(url); UI.toast('Link copied', 'success'); } catch (e) { UI.toast('Could not copy — use the address bar', 'error'); }
+    });
+    const native = navigator.share ? el('button', { type: 'button', class: 'share-btn', text: 'Share…' }) : null;
+    if (native) native.addEventListener('click', () => navigator.share({ title: p.title, url }).catch(() => {}));
+    return el('div', { class: 'share-row', 'aria-label': 'Share this deal' }, el('span', { class: 'muted small', text: 'Share' }), native,
+      links.map(([name, href]) => el('a', { class: 'share-btn', href, target: '_blank', rel: 'noopener noreferrer', text: name })), copy);
+  }
+
+  /** Real clicks to the partner stores in the last 7 days; only shown once it is meaningful. */
+  function socialProof(p) {
+    if (!p.clicks7d || p.clicks7d < 5) return null;
+    return el('p', { class: 'social-proof' }, el('span', { class: 'pulse', 'aria-hidden': 'true' }),
+      p.clicks7d + ' shoppers checked this deal this week');
+  }
+
+  function specsSection(specs) {
+    if (!specs || !specs.length) return null;
+    return el('section', { class: 'specs reveal' }, sectionHead('Specifications.', null),
+      el('dl', { class: 'spec-table' }, specs.map((sp) => el('div', { class: 'spec-row' }, el('dt', { text: sp.name }), el('dd', { text: sp.value })))));
+  }
+
+  // ------------------------------------------------------------------ coupons & offers
+
+  /** "Copy code & go to store": copies the code, shows it, then opens the store through the tracked link. */
+  function wireOfferButtons(root) {
+    root.querySelectorAll('[data-offer-code]').forEach((b) => {
+      if (b.dataset.wired) return;
+      b.dataset.wired = '1';
+      b.addEventListener('click', async () => {
+        const code = b.dataset.offerCode;
+        try { await navigator.clipboard.writeText(code); } catch (e) { /* the code is shown on the button anyway */ }
+        b.textContent = code + ' — copied';
+        b.classList.add('revealed');
+        window.open(b.dataset.offerGo, '_blank', 'noopener');
+        UI.toast('Code ' + code + ' copied. Paste it at checkout on the store’s site.', 'success');
+      });
+    });
+  }
+
+  function offerCard(o) {
+    return el('article', { class: 'offer-card' },
+      el('div', { class: 'offer-store-name', text: o.merchantName }),
+      el('h3', { text: o.title }),
+      o.description ? el('p', { class: 'muted', text: o.description }) : null,
+      el('div', { class: 'offer-meta' }, o.verifiedAt ? el('span', { class: 'badge green', text: 'Verified' }) : null,
+        o.endsAt ? el('span', { class: 'muted small', text: 'Ends ' + UI.date(o.endsAt, false) }) : null),
+      o.code
+        ? el('button', { class: 'btn offer-cta', type: 'button', dataset: { offerGo: o.goUrl, offerCode: o.code }, text: 'Copy code & go to store' })
+        : el('a', { class: 'btn offer-cta', href: o.goUrl, target: '_blank', rel: 'sponsored nofollow noopener', text: 'Get this deal' }));
+  }
+
+  function offersSection(list, title, subtitle) {
+    if (!list || !list.length) return null;
+    const section = el('section', { class: 'offers-block reveal' }, sectionHead(title, subtitle),
+      el('div', { class: 'offer-grid' }, list.map(offerCard)));
+    wireOfferButtons(section);
+    return section;
+  }
+
+  // ------------------------------------------------------------------ deal of the day
+
+  /** Today's pick with a live countdown to the real end time set in the admin. */
+  function dealOfDay(sf, d) {
+    if (!d || !d.product) return null;
+    const p = d.product;
+    const end = new Date(d.endsAt).getTime();
+    const parts = ['days', 'hours', 'minutes', 'seconds'].map((label) => {
+      const value = el('span', { class: 'cd-value', text: '00' });
+      const unit = el('span', { class: 'cd-label', text: label });
+      return { value, unit, box: el('div', { class: 'cd-part' }, value, unit) };
+    });
+    const clock = el('div', { class: 'countdown', role: 'timer', 'aria-label': 'Time left' }, parts.map((x) => x.box));
+    const section = el('section', { class: 'dotd reveal' },
+      el('a', { class: 'dotd-media', href: '/' + sf + '/p/' + encodeURIComponent(p.slug) },
+        p.imageUrl ? el('img', { src: p.imageUrl, alt: '', decoding: 'async' }) : null,
+        p.discountPercent ? el('span', { class: 'deal-badge', text: '-' + p.discountPercent + '%' }) : null),
+      el('div', { class: 'dotd-body' },
+        el('p', { class: 'eyebrow', text: 'Deal of the Day' }),
+        el('h2', null, el('a', { href: '/' + sf + '/p/' + encodeURIComponent(p.slug), text: p.title })),
+        p.summary ? el('p', { class: 'muted', text: p.summary }) : null,
+        priceLine(p),
+        el('p', { class: 'small muted', text: 'Ends in' }), clock,
+        el('div', { class: 'cta-row' },
+          p.goUrl ? el('a', { class: 'btn', href: p.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
+            text: p.merchantName && p.merchantName.length <= 16 ? 'Buy on ' + p.merchantName : 'Get the deal' }) : null,
+          el('a', { class: 'link-more', href: '/' + sf + '/p/' + encodeURIComponent(p.slug), text: 'Learn more' }))));
+    const tick = () => {
+      let left = Math.max(0, Math.floor((end - Date.now()) / 1000));
+      if (left <= 0) { section.remove(); return; }
+      const days = Math.floor(left / 86400); left -= days * 86400;
+      const h = Math.floor(left / 3600); left -= h * 3600;
+      const m = Math.floor(left / 60);
+      const s = left - m * 60;
+      [days, h, m, s].forEach((v, i) => { parts[i].value.textContent = String(v).padStart(2, '0'); });
+      parts[0].box.hidden = days === 0;
+      parts[0].unit.textContent = days === 1 ? 'day' : 'days';
+      setTimeout(tick, 1000);
+    };
+    tick();
+    return section;
+  }
+
+  // ------------------------------------------------------------------ newsletter & price alerts
+
+  function newsletterForm(sf, source, compact) {
+    const email = el('input', { type: 'email', name: 'email', required: true, autocomplete: 'email', placeholder: 'you@example.com', 'aria-label': 'Email address' });
+    const btn = el('button', { class: 'btn', type: 'submit', text: 'Get deals' });
+    const msg = el('p', { class: 'small newsletter-msg', role: 'status' });
+    const form = el('form', { class: 'newsletter-form' + (compact ? ' compact' : '') }, el('div', { class: 'newsletter-row' }, email, btn), msg);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      UI.busy(btn, async () => {
+        try {
+          const r = await Api.post('/api/' + sf + '/newsletter', { email: email.value.trim(), source });
+          msg.textContent = r.status === 'ACTIVE' ? 'You are already subscribed — thank you!' : 'Almost done: check your inbox and tap the link to confirm.';
+          Site.track('sign_up');
+          msg.className = 'small newsletter-msg ok-text';
+          form.reset();
+        } catch (err) {
+          msg.textContent = UI.errorMessage(err);
+          msg.className = 'small newsletter-msg error-text';
+        }
+      });
+    });
+    return form;
+  }
+
+  function newsletterSection(sf) {
+    return el('section', { class: 'newsletter reveal' },
+      el('div', null, el('h2', null, 'Never miss a deal. ', el('span', { class: 'sub', text: 'The week’s best prices, once a week.' })),
+        el('p', { class: 'muted small', text: 'Free. Unsubscribe with one click any time. We never share your email.' })),
+      newsletterForm(sf, 'home', false));
+  }
+
+  /** "Email me when it drops below ₹X" (not for stores whose prices we may not show). */
+  function priceAlertBox(sf, p) {
+    const price = p.affiliate && p.affiliate.displayPriceMinor;
+    if (price == null) return null;
+    const suggested = Math.max(1, Math.floor((price * 0.9) / 100));
+    const email = el('input', { type: 'email', required: true, autocomplete: 'email', placeholder: 'you@example.com', 'aria-label': 'Email address' });
+    const target = el('input', { type: 'number', min: '1', max: String(Math.floor(price / 100) - 1), step: '1', value: String(suggested), 'aria-label': 'Target price in rupees' });
+    const btn = el('button', { class: 'btn secondary small', type: 'submit', text: 'Set alert' });
+    const msg = el('p', { class: 'small', role: 'status' });
+    const form = el('form', { class: 'price-alert' },
+      el('p', { class: 'price-alert-title' }, el('strong', { text: 'Waiting for a better price?' }), ' We’ll email you when it drops below:'),
+      el('div', { class: 'price-alert-row' }, el('span', { class: 'rupee', text: '₹' }), target, email, btn), msg);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      UI.busy(btn, async () => {
+        try {
+          const r = await Api.post('/api/' + sf + '/price-alerts', { slug: p.slug, email: email.value.trim(), targetPrice: parseInt(target.value, 10) });
+          msg.className = 'small ok-text';
+          msg.textContent = r.status === 'ACTIVE' ? 'Your alert is updated to ' + money(r.targetMinor) + '.'
+            : 'Check your inbox and confirm — then we’ll watch the price for you.';
+          Site.track('price_alert', { name: p.title });
+        } catch (err) {
+          msg.className = 'small error-text';
+          msg.textContent = UI.errorMessage(err);
+        }
+      });
+    });
+    return form;
+  }
+
+  /** Messages after clicking a link in our emails (?alert=on, ?newsletter=off, ...). */
+  function linkNotices() {
+    const notes = { 'alert=on': 'Price alert confirmed. We’ll email you when the price drops.', 'alert=off': 'Your price alert is cancelled.',
+      'newsletter=on': 'You’re subscribed. Watch your inbox for the best deals.', 'newsletter=off': 'You’ve been unsubscribed. Sorry to see you go!' };
+    Object.entries(notes).forEach(([q, text]) => { if (location.search.includes(q)) UI.toast(text, 'success'); });
+  }
+
+  // ------------------------------------------------------------------ carousel
+
+  /**
+   * Auto-advancing slider. Rotation pauses while the pointer or keyboard focus is on a slide or the tab is hidden,
+   * stops once the shopper navigates by hand (the optional toggle restarts it) and does not start with reduced motion.
+   */
+  function carousel(contents, opts) {
+    const o = Object.assign({ interval: 4000, label: 'Slides', dots: false, toggle: false }, opts);
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let index = 0;
+    let playing = !reduceMotion;
+    let hovered = false;
+    let focused = false;
+    let timer = null;
+
+    const slides = contents.map((c, i) => el('div', {
+      class: 'carousel-slide', role: 'group', 'aria-roledescription': 'slide', 'aria-label': (i + 1) + ' of ' + contents.length
+    }, c));
+    const track = el('div', { class: 'carousel-track' }, slides);
+    const viewport = el('div', { class: 'carousel-viewport ' + (o.viewportClass || '') }, track);
+    const arrow = (step, label, text) => el('button', {
+      type: 'button', class: 'carousel-arrow ' + (step < 0 ? 'prev' : 'next'), 'aria-label': label, text,
+      on: { click: () => go(index + step, true) }
+    });
+    const dots = o.dots ? slides.map((_, i) => el('button', {
+      type: 'button', class: 'carousel-dot', 'aria-label': 'Show slide ' + (i + 1), on: { click: () => go(i, true) }
+    })) : [];
+    const toggle = o.toggle ? el('button', {
+      type: 'button', class: 'carousel-toggle', on: { click: () => { playing = !playing; render(); } }
+    }) : null;
+
+    const root = el('div', { class: 'carousel ' + (o.className || ''), role: 'region', 'aria-roledescription': 'carousel', 'aria-label': o.label },
+      el('div', { class: 'carousel-stage' }, viewport, arrow(-1, 'Previous slide', '‹'), arrow(1, 'Next slide', '›')),
+      dots.length || toggle ? el('div', { class: 'carousel-controls' }, toggle, el('div', { class: 'carousel-dots' }, dots)) : null);
+
+    function schedule() {
+      clearTimeout(timer);
+      if (playing && !hovered && !focused && !document.hidden) timer = setTimeout(() => go(index + 1), o.interval);
+    }
+
+    function render() {
+      track.style.transform = 'translateX(' + (-100 * index) + '%)';
+      slides.forEach((s, i) => {
+        s.inert = i !== index;
+        s.setAttribute('aria-hidden', String(i !== index));
+      });
+      dots.forEach((d, i) => d.setAttribute('aria-current', String(i === index)));
+      track.setAttribute('aria-live', playing ? 'off' : 'polite');
+      if (toggle) {
+        toggle.textContent = playing ? 'Pause' : 'Play';
+        toggle.setAttribute('aria-label', (playing ? 'Pause' : 'Play') + ' slideshow');
+      }
+      schedule();
+    }
+
+    function go(i, byUser) {
+      index = (i + slides.length) % slides.length;
+      if (byUser) playing = false;
+      render();
+      if (o.onChange) o.onChange(index);
+    }
+
+    viewport.addEventListener('mouseenter', () => { hovered = true; schedule(); });
+    viewport.addEventListener('mouseleave', () => { hovered = false; schedule(); });
+    viewport.addEventListener('focusin', () => { focused = true; schedule(); });
+    viewport.addEventListener('focusout', (e) => {
+      if (!viewport.contains(e.relatedTarget)) { focused = false; schedule(); }
+    });
+    document.addEventListener('visibilitychange', schedule);
+    root.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        go(index + (e.key === 'ArrowLeft' ? -1 : 1), true);
+      }
+    });
+    let touchX = null;
+    viewport.addEventListener('touchstart', (e) => { touchX = e.touches[0].clientX; }, { passive: true });
+    viewport.addEventListener('touchend', (e) => {
+      if (touchX === null) return;
+      const dx = e.changedTouches[0].clientX - touchX;
+      touchX = null;
+      if (Math.abs(dx) > 40) go(index + (dx < 0 ? 1 : -1), true);
+    });
+
+    /** Stops the automatic slideshow (e.g. while a video plays). */
+    function pause() {
+      playing = false;
+      render();
+    }
+
+    render();
+    return { root, go, pause };
   }
 
   // ------------------------------------------------------------------ product
 
+  /**
+   * Product page built for clicks: title, price and the Buy button come first (also on phones, plus a sticky Buy bar),
+   * then highlights, a store price comparison, our verdict, pros and cons, the description and similar deals.
+   */
   async function productPage({ sf, user }) {
     const slug = decodeURIComponent((location.pathname.split('/p/')[1] || '').replace(/\/$/, ''));
     const p = await Api.get('/api/' + sf + '/catalog/products/' + encodeURIComponent(slug));
+    rememberViewed(sf, p.id);
+    countView(sf, p.slug);
+    document.body.dataset.trackName = p.title;
+    Site.track('view_item', { id: p.id, name: p.title, category: p.category ? p.category.name : undefined,
+      store: p.affiliate ? p.affiliate.merchantName : undefined,
+      price: p.affiliate && p.affiliate.displayPriceMinor != null ? p.affiliate.displayPriceMinor / 100 : undefined });
+    const offersHolder = el('div');
+    if (p.sellingMethod === 'AFFILIATE') {
+      Api.get('/api/' + sf + '/catalog/offers?product=' + p.id).then((list) => {
+        const block = offersSection(list, 'Coupons for this deal.', 'Use them at checkout on the store\u2019s site.');
+        if (block) { mount(offersHolder, block); Site.reveal(offersHolder); }
+      }).catch(() => {});
+    }
     const ratingLine = el('div', { class: 'rating-line' });
 
-    const first = p.images[0];
-    const mainImg = el('img', {
-      src: first ? (first.largeUrl || first.url) : '', alt: first ? (first.alt || p.title) : '', fetchpriority: 'high'
-    });
-    const thumbs = p.images.length > 1 ? el('div', { class: 'thumbs' }, p.images.map((img, i) => {
-      const b = el('button', { type: 'button', class: i === 0 ? 'active' : '', 'aria-label': 'Image ' + (i + 1) },
-        el('img', { src: img.thumbUrl || img.url, alt: '', loading: 'lazy', decoding: 'async' }));
-      b.addEventListener('click', () => {
-        mainImg.src = img.largeUrl || img.url;
-        mainImg.alt = img.alt || p.title;
-        b.parentElement.querySelectorAll('button').forEach((x) => x.classList.remove('active'));
-        b.classList.add('active');
+    const fallbackPoster = p.images.length ? p.images[0].largeUrl || p.images[0].url : null;
+    const pictures = p.images.map((img, i) => ({
+      node: el('img', { src: img.largeUrl || img.url, alt: img.alt || p.title, decoding: 'async', fetchpriority: i === 0 ? 'high' : null }),
+      thumb: img.thumbUrl || img.url, label: 'Image ' + (i + 1)
+    }));
+    const clips = (p.videos || []).map((v, i) => ({
+      node: el('video', { class: 'gallery-video', controls: true, preload: 'none', playsinline: true, poster: v.posterUrl || fallbackPoster,
+        'aria-label': v.title || p.title }, el('source', { src: v.url, type: v.contentType })),
+      thumb: v.posterUrl || fallbackPoster, label: 'Video ' + (i + 1) + (v.title ? ': ' + v.title : ''), video: true
+    }));
+    // The main image stays first; videos follow it so shoppers find them without scrolling through every photo.
+    const slides = pictures.length ? [pictures[0], ...clips, ...pictures.slice(1)] : clips;
+    let gallery;
+    if (slides.length > 1) {
+      const thumbs = slides.map((m, i) => el('button', {
+        type: 'button', class: (i === 0 ? 'active ' : '') + (m.video ? 'video-thumb' : ''), 'aria-label': m.label,
+        on: { click: () => slider.go(i, true) }
+      }, m.thumb ? el('img', { src: m.thumb, alt: '', loading: 'lazy', decoding: 'async' }) : null,
+      m.video ? el('span', { class: 'play-badge', 'aria-hidden': 'true', text: '▶' }) : null));
+      const slider = carousel(slides.map((m) => m.node), {
+        className: 'gallery', viewportClass: 'main', label: p.title + (clips.length ? ' images and videos' : ' images'),
+        onChange: (i) => {
+          thumbs.forEach((b, j) => b.classList.toggle('active', i === j));
+          slides.forEach((m, j) => { if (m.video && j !== i) m.node.pause(); });
+        }
       });
-      return b;
-    })) : null;
-    const gallery = el('div', { class: 'gallery' },
-      el('div', { class: 'main' }, p.images.length ? mainImg : el('span', { class: 'muted', text: 'No image' })), thumbs);
+      clips.forEach((m) => m.node.addEventListener('play', () => slider.pause()));
+      slider.root.appendChild(el('div', { class: 'thumbs' }, thumbs));
+      gallery = slider.root;
+    } else {
+      gallery = el('div', { class: 'gallery' },
+        el('div', { class: 'main' }, slides.length ? slides[0].node : el('span', { class: 'muted', text: 'No image' })));
+    }
 
-    const info = el('div');
+    const info = el('div', { class: 'buy-box' });
     UI.append(info, [
-      el('div', { class: 'mb' }, typeBadge(p)),
-      el('h1', null, isDemoProduct(p) ? el('span', { class: 'badge amber', text: 'Demo product' }) : null,
-        isDemoProduct(p) ? ' ' : null, p.title),
-      isDemoProduct(p) ? el('p', { class: 'note', text: 'This is a sample affiliate listing so you can see how the store looks. The Buy button opens a demo partner page — delete it in the admin panel when you add real offers.' }) : null,
-      affiliateOnly() ? el('p', { class: 'muted small', text: 'Affiliate disclosure: we may earn a commission when you buy through partner links. Price and fulfilment are set by the partner store.' }) : null,
-      ratingLine,
-      p.brand ? el('p', { class: 'muted', text: 'by ' + p.brand }) : null,
-      p.summary ? el('p', { text: p.summary }) : null,
-      wishlistButton(sf, p.slug, user)
+      el('div', { class: 'card-meta' }, demoBadge(p), p.brand ? el('span', { class: 'muted', text: p.brand }) : null),
+      el('h1', { text: p.title }),
+      p.expertRating ? expertRating(p.expertRating, 'Our rating') : null,
+      ratingLine
     ]);
 
+    let sticky = null;
+    let mainCta = null;
     if (p.sellingMethod === 'AFFILIATE') {
       const offer = p.affiliate;
       const variant = (p.variants && p.variants[0]) || null;
       if (offer) {
-        const addBtn = el('button', { class: 'btn secondary', type: 'button', text: 'Add to cart' });
+        const shown = offer.displayPriceMinor != null;
+        const addBtn = el('button', { class: 'btn ghost small', type: 'button', text: 'Add to cart' });
         const msg = el('div');
         addBtn.disabled = !variant || !variant.available;
         addBtn.addEventListener('click', () => UI.busy(addBtn, async () => {
@@ -196,28 +838,41 @@
             mount(msg, UI.errorAlert(e));
           }
         }));
+        mainCta = el('a', { class: 'btn block buy-cta', href: offer.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
+          text: 'Buy on ' + offer.merchantName + ' →' });
         UI.append(info, [
-          offer.displayPriceMinor != null ? el('p', { class: 'price', text: money(offer.displayPriceMinor) }) : null,
-          offer.displayPriceMinor != null && offer.priceCheckedAt
-            ? el('p', { class: 'muted small', text: 'Price at ' + offer.merchantName + ' as of ' + UI.date(offer.priceCheckedAt, false) + '. The final price is set by the partner store.' })
-            : null,
-          offer.priceStale
-            ? el('p', { class: 'muted small', text: 'See the current price at ' + offer.merchantName + '.' })
-            : null,
-          el('div', { class: 'actions mb' },
-            el('a', { class: 'btn', href: offer.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer', text: 'Buy from ' + offer.merchantName }),
-            addBtn),
-          el('p', { class: 'muted small', text: 'Add to cart to save this deal and buy from the partner when you are ready.' }),
+          el('div', { class: 'price-box' },
+            shown
+              ? el('div', { class: 'price-row' }, el('span', { class: 'price big', text: money(offer.displayPriceMinor) }),
+                offer.discountPercent ? [el('s', { class: 'muted', text: money(offer.listPriceMinor) }),
+                  el('span', { class: 'deal-badge inline', text: '-' + offer.discountPercent + '%' })] : null)
+              : el('div', { class: 'check-price big', text: 'Check the latest price on ' + offer.merchantName }),
+            el('div', { class: 'muted small' }, 'at ', el('strong', { text: offer.merchantName }),
+              shown && offer.priceCheckedAt ? ' · ' + checkedText(offer.priceCheckedAt) + '. The store sets the final price.' : null),
+            priceFlags(p.priceStats)),
+          socialProof(p),
+          mainCta,
+          el('p', { class: 'disclosure-line', text: offer.disclosure }),
+          p.offers.length > 1 ? compareStores(p.offers) : null,
+          priceAlertBox(sf, p),
+          p.summary ? el('p', { class: 'lead-text', text: p.summary }) : null,
+          el('div', { class: 'actions secondary-actions' }, wishlistButton(sf, p.slug, user), compareToggle(sf, p, 'ghost-compare'), addBtn),
           msg,
-          el('p', { class: 'disclosure', text: offer.disclosure })
+          isDemoProduct(p) ? el('p', { class: 'note small', text: 'This is a sample listing so you can see how the store looks. The Buy button opens a demo partner page — delete it in the admin panel when you add real offers.' }) : null
         ]);
+        sticky = el('div', { class: 'sticky-buy', role: 'region', 'aria-label': 'Buy this deal' },
+          el('div', { class: 'sticky-inner' },
+            el('div', { class: 'sticky-title', text: p.title }),
+            el('div', { class: 'sticky-price' }, el('strong', { text: shown ? money(offer.displayPriceMinor) : 'Check price' }),
+              el('span', { class: 'muted small', text: 'at ' + offer.merchantName })),
+            el('a', { class: 'btn', href: offer.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer', text: 'Buy now' })));
       } else {
         info.appendChild(el('div', { class: 'alert warning', text: 'This partner offer is currently unavailable.' }));
       }
     } else {
       const active = p.variants;
       let selected = active.find((v) => v.available) || active[0];
-      const priceEl = el('p', { class: 'price' });
+      const priceEl = el('p', { class: 'price big' });
       const stockEl = el('p', { class: 'small' });
       const qty = el('input', { type: 'number', min: '1', max: '20', value: '1', class: 'qty', 'aria-label': 'Quantity' });
       const addBtn = el('button', { class: 'btn', type: 'button', text: 'Add to cart' });
@@ -243,23 +898,71 @@
       renderSelected();
       UI.append(info, [priceEl, stockEl, variantPicker,
         el('div', { class: 'actions mb' }, qty, addBtn), msg,
+        p.summary ? el('p', { class: 'lead-text', text: p.summary }) : null,
+        wishlistButton(sf, p.slug, user),
         p.productType === 'PHYSICAL' ? pincodeChecker(sf) : null,
         p.digitalFormat ? el('p', { class: 'muted small', text: 'Format: ' + p.digitalFormat }) : null]);
     }
-
-    if (p.description) {
-      info.appendChild(el('div', { class: 'mt' }, el('h3', { text: 'Description' }), el('div', { class: 'description', text: p.description })));
+    if (p.highlights.length) {
+      info.appendChild(el('ul', { class: 'highlights', 'aria-label': 'Highlights' }, p.highlights.map((h) => el('li', { text: h }))));
     }
+    info.appendChild(shareRow(p));
 
-    const reviewsBox = el('section', { class: 'reviews mt', id: 'reviews' });
+    const more = el('div', { class: 'product-more' },
+      p.verdict ? el('section', { class: 'verdict reveal' }, el('p', { class: 'eyebrow', text: 'Our verdict' }),
+        el('blockquote', { text: p.verdict }), p.expertRating ? expertRating(p.expertRating, 'Our rating') : null) : null,
+      p.pros.length || p.cons.length ? el('section', { class: 'pros-cons reveal' },
+        p.pros.length ? el('div', { class: 'card pros' }, el('h3', { text: 'What we like.' }), el('ul', null, p.pros.map((x) => el('li', { text: x })))) : null,
+        p.cons.length ? el('div', { class: 'card cons' }, el('h3', { text: 'Keep in mind.' }), el('ul', null, p.cons.map((x) => el('li', { text: x })))) : null) : null,
+      offersHolder,
+      specsSection(p.specs),
+      p.description ? el('section', { class: 'details reveal' }, sectionHead('The details.', null), el('div', { class: 'description', text: p.description })) : null,
+      shelf(sf, 'You may also like.', 'More deals like this one.', p.similar),
+      guidesSection(sf, p.id, 'Featured in our guides.', 'See how it compares.'),
+      recentShelf(sf, p.id));
+
+    const reviewsBox = el('section', { class: 'reviews', id: 'reviews' });
     mount(main(), el('div', { class: 'container' },
       el('nav', { class: 'breadcrumb small', 'aria-label': 'Breadcrumb' },
         el('a', { href: '/' + sf, text: 'Home' }),
         p.category ? [' / ', el('a', { href: '/' + sf + '/c/' + encodeURIComponent(p.category.slug), text: p.category.name })] : null,
         ' / ', el('span', { text: p.title })),
       el('div', { class: 'product-detail' }, gallery, info),
-      reviewsBox));
+      more,
+      reviewsBox), sticky);
+    if (sticky && mainCta) {
+      // Phones: a Buy button is always in reach; the bar hides while the main one is on screen.
+      document.body.classList.add('has-sticky-buy');
+      if ('IntersectionObserver' in window) {
+        new IntersectionObserver(([e]) => sticky.classList.toggle('show', !e.isIntersecting)).observe(mainCta);
+      } else {
+        sticky.classList.add('show');
+      }
+    }
     renderReviews(sf, p, user, reviewsBox, ratingLine, 0);
+  }
+
+  function priceFlags(s) {
+    if (!s) return null;
+    const flag = s.lowest30d ? el('span', { class: 'deal-flag inline', text: 'Lowest price in 30 days' })
+      : s.dropPercent ? el('span', { class: 'deal-flag inline', text: 'Price dropped ' + s.dropPercent + '% this week' }) : null;
+    const range = s.low30Minor != null && s.high30Minor != null && s.low30Minor !== s.high30Minor
+      ? el('div', { class: 'muted small', text: '30-day price range: ' + money(s.low30Minor) + ' – ' + money(s.high30Minor) }) : null;
+    return flag || range ? el('div', { class: 'price-flags' }, flag, range) : null;
+  }
+
+  /** Every store that sells the product, best price first. "Best price" is only claimed when every store shows a price. */
+  function compareStores(offers) {
+    const complete = offers.every((o) => o.displayPriceMinor != null);
+    return el('div', { class: 'compare-stores' },
+      el('h3', { text: 'Compare ' + offers.length + ' stores' }),
+      el('ul', null, offers.map((o, i) => el('li', { class: i === 0 && complete ? 'best' : '' },
+        el('div', { class: 'store' }, el('strong', { text: o.merchantName }),
+          i === 0 && complete ? el('span', { class: 'badge green', text: 'Best price' }) : null,
+          o.displayPriceMinor != null && o.priceCheckedAt ? el('div', { class: 'muted small', text: checkedText(o.priceCheckedAt) }) : null),
+        el('div', { class: 'store-price' }, o.displayPriceMinor != null ? money(o.displayPriceMinor) : el('span', { class: 'muted small', text: 'Check price' })),
+        el('a', { class: 'btn small' + (i === 0 ? '' : ' secondary'), href: o.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
+          text: 'Go to ' + o.merchantName })))));
   }
 
   function stars(rating) {
@@ -326,10 +1029,11 @@
 
     const list = data.reviews.items.length ? data.reviews.items.map((rv) => el('article', { class: 'review card' },
       el('div', null, stars(rv.rating), rv.title ? el('strong', { text: ' ' + rv.title }) : null),
-      el('div', { class: 'muted small' }, rv.authorName, rv.verifiedPurchase ? ' \u00B7 Verified purchase' : '', ' \u00B7 ' + UI.date(rv.createdAt, false)),
+      el('div', { class: 'muted small' }, rv.authorName, rv.verifiedPurchase ? ' \u00B7 Verified purchase' : '',
+        rv.sourceLabel ? ' \u00B7 ' + rv.sourceLabel : '', ' \u00B7 ' + UI.date(rv.createdAt, false)),
       rv.body ? el('p', { class: 'review-body', text: rv.body }) : null,
       rv.adminReply ? el('p', { class: 'note small', text: 'Reply from the store: ' + rv.adminReply }) : null))
-      : el('p', { class: 'muted', text: 'No reviews yet.' });
+      : el('p', { class: 'muted', text: 'No reviews yet. Used this product? Your review helps other shoppers decide.' });
 
     const pager = data.reviews.totalPages > 1 ? el('div', { class: 'pager' },
       page > 0 ? el('button', { class: 'btn secondary small', type: 'button', text: 'Newer', on: { click: () => renderReviews(sf, p, user, box, ratingLine, page - 1) } }) : null,
@@ -337,26 +1041,36 @@
 
     let formArea;
     if (!user) {
-      formArea = el('p', { class: 'small' }, el('a', { href: Site.loginUrl(), text: 'Sign in' }), ' to write a review.');
+      const next = '/account/login.html?next=' + encodeURIComponent(location.pathname + location.search + '#reviews');
+      formArea = el('div', { class: 'card review-cta' },
+        el('div', null, el('strong', { text: 'Used this product?' }),
+          el('div', { class: 'muted small', text: 'Share your experience to help other shoppers. It takes a minute.' })),
+        el('a', { class: 'btn secondary', href: next, text: 'Write a review' }));
     } else if (!data.canReview) {
       formArea = data.cannotReviewReason ? el('p', { class: 'muted small', text: data.cannotReviewReason }) : null;
     } else {
       formArea = reviewForm(sf, p, data.mine, () => renderReviews(sf, p, user, box, ratingLine, 0));
     }
-    mount(box, el('h2', { text: 'Customer reviews' }), formArea, list, pager);
+    const summary = r.count ? el('p', { class: 'review-summary' }, stars(r.average),
+      el('strong', { text: ' ' + r.average.toFixed(1) + ' out of 5' }),
+      el('span', { class: 'muted', text: ' \u00B7 ' + r.count + (r.count === 1 ? ' review' : ' reviews') })) : null;
+    mount(box, sectionHead('Customer reviews.', 'What buyers say.'), summary, formArea, list, pager);
+    if (page === 0 && location.hash === '#reviews') box.scrollIntoView({ block: 'start' });
   }
 
   function reviewForm(sf, p, mine, done) {
     const rating = el('select', { required: true },
       [5, 4, 3, 2, 1].map((n) => el('option', { value: String(n), text: n + ' star' + (n > 1 ? 's' : ''), selected: mine ? mine.rating === n : n === 5 })));
-    const title = el('input', { maxlength: '150', value: mine ? mine.title || '' : '' });
-    const body = el('textarea', { rows: '4', maxlength: '4000' });
+    const title = el('input', { maxlength: '120', value: mine ? mine.title || '' : '' });
+    const body = el('textarea', { rows: '4', maxlength: '3000', placeholder: 'What did you like or dislike? How did you use it?' });
     body.value = mine ? mine.body || '' : '';
     const msg = el('div');
     const btn = el('button', { class: 'btn', type: 'submit', text: mine ? 'Update review' : 'Submit review' });
     const form = el('form', { class: 'card review-form' },
       el('h3', { text: mine ? 'Your review' : 'Write a review' }),
-      mine && mine.status !== 'APPROVED' ? el('p', { class: 'muted small', text: 'Status: ' + UI.label(mine.status) + '. Reviews are checked before they appear.' }) : null,
+      mine && mine.status === 'PENDING' ? el('p', { class: 'muted small', text: 'Thanks! Your review is waiting for approval and will appear here once the store team checks it.' })
+        : mine && mine.status === 'REJECTED' ? el('p', { class: 'muted small', text: 'Your review was not published. You can edit it and send it again.' })
+        : !mine ? el('p', { class: 'muted small', text: 'Reviews appear after a quick check by the store team.' }) : null,
       el('div', { class: 'row' }, UI.field('Rating', rating), UI.field('Title (optional)', title)),
       UI.field('Your review', body), msg, btn);
     form.addEventListener('submit', (e) => {
@@ -365,7 +1079,7 @@
         try {
           const saved = await Api.post('/api/' + sf + '/catalog/products/' + encodeURIComponent(p.slug) + '/reviews',
             { rating: parseInt(rating.value, 10), title: title.value.trim(), body: body.value.trim() });
-          UI.toast(saved.status === 'APPROVED' ? 'Thanks! Your review is live.' : 'Thanks! Your review will appear after moderation.', 'success');
+          UI.toast(saved.status === 'APPROVED' ? 'Thanks! Your review is live.' : 'Thanks! Your review will appear once the store team approves it.', 'success');
           done();
         } catch (err) { mount(msg, UI.errorAlert(err)); }
       });

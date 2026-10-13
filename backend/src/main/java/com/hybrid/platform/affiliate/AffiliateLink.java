@@ -36,6 +36,23 @@ public class AffiliateLink {
     @Column(name = "price_checked_at")
     private Instant priceCheckedAt;
 
+    /** Original / maximum retail price at the partner, to show the discount; null when unknown. */
+    @Column(name = "list_price_minor")
+    private Long listPriceMinor;
+
+    /** Result of the nightly link check: null (not checked yet), OK, UNKNOWN or BROKEN (hidden from shoppers). */
+    @Column(name = "health_status")
+    private String healthStatus;
+
+    @Column(name = "health_checked_at")
+    private Instant healthCheckedAt;
+
+    @Column(name = "health_failures", nullable = false)
+    private int healthFailures;
+
+    @Column(name = "health_detail")
+    private String healthDetail;
+
     private String disclosure;
 
     @Column(nullable = false)
@@ -75,6 +92,25 @@ public class AffiliateLink {
     public void setDisplayPriceMinor(Long displayPriceMinor) { this.displayPriceMinor = displayPriceMinor; }
     public Instant getPriceCheckedAt() { return priceCheckedAt; }
     public void setPriceCheckedAt(Instant priceCheckedAt) { this.priceCheckedAt = priceCheckedAt; }
+    public Long getListPriceMinor() { return listPriceMinor; }
+    public void setListPriceMinor(Long listPriceMinor) { this.listPriceMinor = listPriceMinor; }
+    public String getHealthStatus() { return healthStatus; }
+    public Instant getHealthCheckedAt() { return healthCheckedAt; }
+    public int getHealthFailures() { return healthFailures; }
+    public String getHealthDetail() { return healthDetail; }
+    public boolean isBroken() { return "BROKEN".equals(healthStatus); }
+
+    public void recordHealth(String status, int failures, String detail, Instant at) {
+        this.healthStatus = status;
+        this.healthFailures = failures;
+        this.healthDetail = detail == null ? null : detail.substring(0, Math.min(detail.length(), 200));
+        this.healthCheckedAt = at;
+    }
+
+    /** A new destination starts unchecked. */
+    public void resetHealth() {
+        recordHealth(null, 0, null, null);
+    }
     public String getDisclosure() { return disclosure; }
     public void setDisclosure(String disclosure) { this.disclosure = disclosure; }
     public boolean isActive() { return active; }

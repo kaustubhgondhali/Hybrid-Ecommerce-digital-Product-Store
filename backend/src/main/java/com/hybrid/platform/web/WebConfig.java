@@ -25,6 +25,7 @@ public class WebConfig implements WebMvcConfigurer {
     public void addViewControllers(ViewControllerRegistry registry) {
         // Store home, category, product and content pages are server-rendered by SeoPageController.
         registry.addViewController(SF + "/wishlist").setViewName("forward:/store/wishlist.html");
+        registry.addViewController(SF + "/compare").setViewName("forward:/store/compare.html");
         registry.addViewController(SF + "/cart").setViewName("forward:/store/cart.html");
         registry.addViewController(SF + "/checkout").setViewName("forward:/store/checkout.html");
         registry.addViewController(SF + "/pay/{orderNumber}").setViewName("forward:/store/pay.html");

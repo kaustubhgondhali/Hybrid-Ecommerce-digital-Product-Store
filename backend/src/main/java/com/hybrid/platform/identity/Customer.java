@@ -1,5 +1,6 @@
 package com.hybrid.platform.identity;
 
+import com.hybrid.platform.common.Storefront;
 import jakarta.persistence.*;
 
 import java.time.Instant;
@@ -40,6 +41,10 @@ public class Customer {
 
     @Column(name = "last_login_at")
     private Instant lastLoginAt;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "signup_storefront", updatable = false)
+    private Storefront signupStorefront;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -94,4 +99,6 @@ public class Customer {
     public boolean isEmailVerified() { return emailVerified; }
     public void setEmailVerified(boolean emailVerified) { this.emailVerified = emailVerified; }
     public Instant getCreatedAt() { return createdAt; }
+    public Storefront getSignupStorefront() { return signupStorefront; }
+    public void setSignupStorefront(Storefront signupStorefront) { this.signupStorefront = signupStorefront; }
 }

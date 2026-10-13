@@ -9,6 +9,12 @@ import com.hybrid.platform.commerce.settings.SettingsService;
 import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.content.ContentPage;
 import com.hybrid.platform.content.ContentService;
+import com.hybrid.platform.catalog.CatalogPublicService;
+import com.hybrid.platform.guides.Guide;
+import com.hybrid.platform.guides.GuideService;
+import com.hybrid.platform.offers.OfferService;
+import com.hybrid.platform.stories.WebStory;
+import com.hybrid.platform.stories.WebStoryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,14 +36,23 @@ public class SitemapService {
     private final ContentService content;
     private final SettingsService settings;
     private final SeoPageService pages;
+    private final WebStoryService stories;
+    private final CatalogPublicService catalog;
+    private final OfferService offers;
+    private final GuideService guides;
 
     public SitemapService(ProductRepository products, CategoryRepository categories, ContentService content,
-                          SettingsService settings, SeoPageService pages) {
+                          SettingsService settings, SeoPageService pages, WebStoryService stories,
+                          CatalogPublicService catalog, OfferService offers, GuideService guides) {
+        this.guides = guides;
+        this.catalog = catalog;
+        this.offers = offers;
         this.products = products;
         this.categories = categories;
         this.content = content;
         this.settings = settings;
         this.pages = pages;
+        this.stories = stories;
     }
 
     @Transactional(readOnly = true)
@@ -61,9 +76,39 @@ public class SitemapService {
                 out.add(new SitemapEntry(pages.abs(ContentService.url(c)), c.getUpdatedAt(), List.of()));
             }
         }
+        // Coupons page and one page per partner store.
+        for (Storefront sf : Storefront.values()) {
+            if (!offers.live(sf, null, null).isEmpty()) out.add(new SitemapEntry(pages.abs("/" + sf.path() + "/offers"), null, List.of()));
+            for (CatalogPublicService.StoreView st : catalog.stores(sf)) {
+                out.add(new SitemapEntry(pages.abs("/" + sf.path() + "/store/" + st.domain()), null, List.of()));
+            }
+        }
+        // Buying guides: the list page and every published guide.
+        List<Guide> allGuides = guides.allPublished();
+        for (Storefront sf : Storefront.values()) {
+            List<Guide> mine = allGuides.stream().filter(g -> g.getStorefront() == sf).toList();
+            if (mine.isEmpty()) continue;
+            out.add(new SitemapEntry(pages.abs("/" + sf.path() + "/guides"),
+                    mine.stream().map(Guide::getUpdatedAt).max(Instant::compareTo).orElse(null), List.of()));
+            for (Guide g : mine) out.add(new SitemapEntry(pages.abs(g.path()), g.getUpdatedAt(), List.of()));
+        }
+        // Web Stories: listed so Google can find them for its Web Stories results.
+        List<WebStory> published = stories.allPublished();
+        for (Storefront sf : Storefront.values()) {
+            List<WebStory> mine = published.stream().filter(w -> w.getStorefront() == sf).toList();
+            if (mine.isEmpty()) continue;
+            out.add(new SitemapEntry(pages.abs("/" + sf.path() + "/stories"),
+                    mine.stream().map(WebStory::getUpdatedAt).max(Instant::compareTo).orElse(null), List.of()));
+            for (WebStory w : mine) {
+                out.add(new SitemapEntry(pages.abs(w.path()), w.getUpdatedAt(),
+                        w.coverUrl() == null ? List.of() : List.of(pages.abs(w.coverUrl()))));
+            }
+        }
         return out;
     }
 
+    /** Read-only transaction: building entries loads product images lazily (open-in-view is off). */
+    @Transactional(readOnly = true)
     public String sitemapXml() {
         StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
                 .append("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" ")

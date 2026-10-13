@@ -24,7 +24,17 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
 
     long countByStorefrontAndStatus(Storefront storefront, ProductStatus status);
 
+    /** Product counts per category, so storefront menus only list categories that have something in them. */
+    @Query("select p.categoryId, count(p) from Product p where p.storefront = :sf and p.status = :status "
+            + "and p.categoryId is not null and (:method is null or p.sellingMethod = :method) group by p.categoryId")
+    java.util.List<Object[]> countByCategory(@Param("sf") Storefront sf, @Param("status") ProductStatus status,
+                                             @Param("method") SellingMethod method);
+
     java.util.List<Product> findByStorefrontAndStatusOrderByPublishedAtDesc(Storefront storefront, ProductStatus status);
+
+    java.util.List<Product> findByStorefrontAndSlugIn(Storefront storefront, java.util.Collection<String> slugs);
+
+    boolean existsByStorefrontAndTitleIgnoreCase(Storefront storefront, String title);
 
     java.util.List<Product> findByStorefrontAndStatusNotOrderByUpdatedAtDesc(Storefront storefront, ProductStatus status);
 

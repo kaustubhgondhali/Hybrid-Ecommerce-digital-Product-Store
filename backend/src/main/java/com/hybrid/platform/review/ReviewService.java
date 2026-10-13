@@ -34,8 +34,9 @@ public class ReviewService {
         public static final Rating NONE = new Rating(0, 0);
     }
 
+    /** {@code sourceLabel} explains reviews the store team added (e.g. "Shared with us on WhatsApp"); null otherwise. */
     public record PublicReview(Long id, String authorName, int rating, String title, String body,
-                               boolean verifiedPurchase, String adminReply, Instant createdAt) {
+                               boolean verifiedPurchase, String adminReply, Instant createdAt, String sourceLabel) {
     }
 
     public record ProductReviews(Rating rating, PageResponse<PublicReview> reviews, boolean canReview,
@@ -50,10 +51,15 @@ public class ReviewService {
 
     public record AdminReview(Long id, Long productId, String productTitle, String productSlug, String authorName,
                               int rating, String title, String body, String status, boolean verifiedPurchase,
-                              String adminReply, Instant createdAt) {
+                              String adminReply, Instant createdAt, String source, String sourceLabel, String addedBy) {
     }
 
     public record ModerationInput(String status, String adminReply) {
+    }
+
+    /** A genuine review received outside the website; {@code publish} false keeps it waiting in the queue. */
+    public record StaffReviewInput(Long productId, String authorName, Integer rating, String title, String body,
+                                   String source, Boolean publish) {
     }
 
     private final ProductReviewRepository reviews;
@@ -149,12 +155,52 @@ public class ReviewService {
         Map<Long, Product> byId = new HashMap<>();
         products.findAllById(result.getContent().stream().map(ProductReview::getProductId).distinct().toList())
                 .forEach(p -> byId.put(p.getId(), p));
-        return PageResponse.of(result, r -> {
-            Product p = byId.get(r.getProductId());
-            return new AdminReview(r.getId(), r.getProductId(), p == null ? "(deleted)" : p.getTitle(),
-                    p == null ? null : p.getSlug(), r.getAuthorName(), r.getRating(), r.getTitle(), r.getBody(),
-                    r.getStatus().name(), r.isVerifiedPurchase(), r.getAdminReply(), r.getCreatedAt());
-        });
+        return PageResponse.of(result, r -> adminView(r, byId.get(r.getProductId())));
+    }
+
+    /**
+     * Adds a genuine review the store received outside the website (email, WhatsApp, phone, in person). It is labelled
+     * with its source on the storefront, never marked "verified purchase", and published right away unless
+     * {@code publish} is false.
+     */
+    @Transactional
+    public AdminReview staffCreate(AdminPrincipal admin, StaffReviewInput in) {
+        if (in == null || in.productId() == null) {
+            throw ApiException.badRequest("PRODUCT_REQUIRED", "Choose the product this review is about");
+        }
+        Product p = products.findByIdAndStorefront(in.productId(), admin.storefront())
+                .orElseThrow(() -> ApiException.notFound("PRODUCT_NOT_FOUND", "Product not found"));
+        ProductReview.Source source;
+        try {
+            source = ProductReview.Source.valueOf(in.source() == null ? "" : in.source().trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            source = null;
+        }
+        if (source == null || source == ProductReview.Source.WEBSITE) {
+            throw ApiException.badRequest("SOURCE_REQUIRED", "Say where the review came from (email, WhatsApp, phone, in person or other)");
+        }
+        String name = in.authorName() == null ? "" : in.authorName().strip();
+        if (name.isEmpty() || name.length() > 120) {
+            throw ApiException.badRequest("AUTHOR_REQUIRED", "Enter the customer's name (shown as first name and initial)");
+        }
+        if (in.rating() == null || in.rating() < 1 || in.rating() > 5) {
+            throw ApiException.badRequest("INVALID_RATING", "Choose a rating from 1 to 5 stars");
+        }
+        String body = clean(in.body(), 3000, "Review");
+        if (body == null) {
+            throw ApiException.badRequest("REVIEW_TEXT_REQUIRED", "Write what the customer said");
+        }
+        ProductReview r = new ProductReview(admin.storefront(), p.getId(), null);
+        r.setAuthorName(displayName(name));
+        r.setRating(in.rating());
+        r.setTitle(clean(in.title(), 120, "Title"));
+        r.setBody(body);
+        r.setVerifiedPurchase(false);
+        r.markAddedByStaff(source, admin.email());
+        r.setStatus(Boolean.FALSE.equals(in.publish()) ? ProductReview.Status.PENDING : ProductReview.Status.APPROVED);
+        reviews.save(r);
+        audit.record(admin, "REVIEW_ADDED", "ProductReview", r.getId(), source.name() + " " + r.getStatus().name() + " " + p.getTitle());
+        return adminView(r, p);
     }
 
     @Transactional(readOnly = true)
@@ -209,6 +255,13 @@ public class ReviewService {
 
     private static PublicReview publicView(ProductReview r) {
         return new PublicReview(r.getId(), r.getAuthorName(), r.getRating(), r.getTitle(), r.getBody(),
-                r.isVerifiedPurchase(), r.getAdminReply(), r.getCreatedAt());
+                r.isVerifiedPurchase(), r.getAdminReply(), r.getCreatedAt(), r.getSource().label());
+    }
+
+    private static AdminReview adminView(ProductReview r, Product p) {
+        return new AdminReview(r.getId(), r.getProductId(), p == null ? "(deleted)" : p.getTitle(),
+                p == null ? null : p.getSlug(), r.getAuthorName(), r.getRating(), r.getTitle(), r.getBody(),
+                r.getStatus().name(), r.isVerifiedPurchase(), r.getAdminReply(), r.getCreatedAt(),
+                r.getSource().name(), r.getSource().label(), r.getAddedBy());
     }
 }

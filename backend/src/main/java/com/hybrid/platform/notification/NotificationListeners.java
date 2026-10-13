@@ -7,6 +7,7 @@ import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.commerce.order.OrderEvents;
 import com.hybrid.platform.identity.IdentityEvents;
 import com.hybrid.platform.notification.NotificationRepositories.NotificationLogRepository;
+import com.hybrid.platform.wishlist.WishlistRepository;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -16,7 +17,9 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 
 /** Emails are sent only after the business transaction commits, on a background thread. */
 @Component
@@ -28,9 +31,12 @@ public class NotificationListeners {
     private final MailService mail;
     private final AppProperties props;
     private final CartRepository carts;
+    private final WishlistRepository wishlists;
     private final NotificationLogRepository logs;
 
-    public NotificationListeners(MailService mail, AppProperties props, CartRepository carts, NotificationLogRepository logs) {
+    public NotificationListeners(MailService mail, AppProperties props, CartRepository carts, WishlistRepository wishlists,
+                                 NotificationLogRepository logs) {
+        this.wishlists = wishlists;
         this.mail = mail;
         this.props = props;
         this.carts = carts;
@@ -43,23 +49,30 @@ public class NotificationListeners {
         String subject = "Price drop: " + e.productTitle();
         if (subject.length() > 250) subject = subject.substring(0, 247) + "...";
         Instant since = Instant.now().minus(PRICE_DROP_COOLDOWN);
-        String link = base() + "/" + e.storefront().path() + "/cart";
-        int sent = 0;
+        String base = base() + "/" + e.storefront().path();
+        Set<String> alerted = new HashSet<>();
         for (CartRepository.SavedBy c : carts.customersWithProduct(e.storefront().name(), e.productId())) {
-            if (sent >= PRICE_DROP_MAX_RECIPIENTS) break;
-            if (logs.existsByStorefrontAndRecipientAndKindAndSubjectAndCreatedAtAfter(e.storefront(), c.getEmail(),
-                    "PRICE_DROP", subject, since)) {
-                continue;
-            }
-            mail.send(e.storefront(), c.getEmail(), subject,
-                    "Hi " + c.getFullName() + ",\n\nGood news: " + e.productTitle() + ", which you saved in your cart, dropped from "
-                            + money(e.oldPriceMinor(), "INR") + " to " + money(e.newPriceMinor(), "INR") + " at "
-                            + e.merchantName() + ".\n\nPartner prices change often, so check the final price on "
-                            + e.merchantName() + " before you buy:\n" + link
-                            + "\n\nYou get these alerts because the item is in your cart. Remove it from your cart to stop them.",
-                    "PRICE_DROP");
-            sent++;
+            alertSaver(e, subject, since, alerted, c.getEmail(), c.getFullName(), "your cart", base + "/cart");
         }
+        for (WishlistRepository.SavedBy c : wishlists.customersWithProduct(e.storefront().name(), e.productId())) {
+            alertSaver(e, subject, since, alerted, c.getEmail(), c.getFullName(), "your wishlist", base + "/wishlist");
+        }
+    }
+
+    /** One alert per customer and drop, whether they saved the item in their cart, their wishlist or both. */
+    private void alertSaver(AffiliateEvents.PriceDropped e, String subject, Instant since, Set<String> alerted,
+                            String email, String name, String where, String link) {
+        if (alerted.size() >= PRICE_DROP_MAX_RECIPIENTS || !alerted.add(email.toLowerCase(java.util.Locale.ROOT))) return;
+        if (logs.existsByStorefrontAndRecipientAndKindAndSubjectAndCreatedAtAfter(e.storefront(), email, "PRICE_DROP", subject, since)) {
+            return;
+        }
+        mail.send(e.storefront(), email, subject,
+                "Hi " + name + ",\n\nGood news: " + e.productTitle() + ", which you saved in " + where + ", dropped from "
+                        + money(e.oldPriceMinor(), "INR") + " to " + money(e.newPriceMinor(), "INR") + " at "
+                        + e.merchantName() + ".\n\nPartner prices change often, so check the final price on "
+                        + e.merchantName() + " before you buy:\n" + link
+                        + "\n\nYou get these alerts because the item is in " + where + ". Remove it from " + where + " to stop them.",
+                "PRICE_DROP");
     }
 
     @Async

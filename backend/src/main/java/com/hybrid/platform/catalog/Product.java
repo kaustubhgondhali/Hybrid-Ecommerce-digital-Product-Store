@@ -80,6 +80,26 @@ public class Product {
     @Column(name = "gst_rate_bps")
     private Integer gstRateBps;
 
+    /** Deal content: one item per line. */
+    @Column(columnDefinition = "TEXT")
+    private String highlights;
+
+    @Column(columnDefinition = "TEXT")
+    private String pros;
+
+    @Column(columnDefinition = "TEXT")
+    private String cons;
+
+    private String verdict;
+
+    /** Specifications, one "Name: Value" per line. */
+    @Column(columnDefinition = "TEXT")
+    private String specs;
+
+    /** Editor's rating in tenths of a star (45 = 4.5); null when not rated. */
+    @Column(name = "expert_rating")
+    private Integer expertRating;
+
     @Column(name = "published_at")
     private Instant publishedAt;
 
@@ -99,6 +119,10 @@ public class Product {
     @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("sortOrder ASC, id ASC")
     private List<ProductImage> images = new ArrayList<>();
+
+    @OneToMany(mappedBy = "product", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("sortOrder ASC, id ASC")
+    private List<ProductVideo> videos = new ArrayList<>();
 
     protected Product() {
     }
@@ -143,6 +167,12 @@ public class Product {
         return img;
     }
 
+    public ProductVideo addVideo(ProductVideo video) {
+        video.attach(this);
+        videos.add(video);
+        return video;
+    }
+
     public Long getId() { return id; }
     public Storefront getStorefront() { return storefront; }
     public ProductType getProductType() { return productType; }
@@ -181,6 +211,18 @@ public class Product {
     public void setHsnSac(String hsnSac) { this.hsnSac = hsnSac; }
     public Integer getGstRateBps() { return gstRateBps; }
     public void setGstRateBps(Integer gstRateBps) { this.gstRateBps = gstRateBps; }
+    public String getHighlights() { return highlights; }
+    public void setHighlights(String highlights) { this.highlights = highlights; }
+    public String getPros() { return pros; }
+    public void setPros(String pros) { this.pros = pros; }
+    public String getCons() { return cons; }
+    public void setCons(String cons) { this.cons = cons; }
+    public String getVerdict() { return verdict; }
+    public void setVerdict(String verdict) { this.verdict = verdict; }
+    public String getSpecs() { return specs; }
+    public void setSpecs(String specs) { this.specs = specs; }
+    public Integer getExpertRating() { return expertRating; }
+    public void setExpertRating(Integer expertRating) { this.expertRating = expertRating; }
     public Instant getPublishedAt() { return publishedAt; }
     public void setPublishedAt(Instant publishedAt) { this.publishedAt = publishedAt; }
     public Instant getCreatedAt() { return createdAt; }
@@ -188,4 +230,5 @@ public class Product {
     public long getVersion() { return version; }
     public List<ProductVariant> getVariants() { return variants; }
     public List<ProductImage> getImages() { return images; }
+    public List<ProductVideo> getVideos() { return videos; }
 }

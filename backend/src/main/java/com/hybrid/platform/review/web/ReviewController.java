@@ -8,6 +8,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @RestController
 public class ReviewController {
 
@@ -37,6 +39,23 @@ public class ReviewController {
         Storefront sf = Storefront.fromPath(storefront);
         CurrentUser.admin(sf);
         return service.adminList(sf, status, page);
+    }
+
+    /** Number of reviews waiting for approval (shown as a badge in the admin menu). */
+    @GetMapping("/api/{storefront}/admin/reviews/pending-count")
+    @PreAuthorize("hasAuthority('PERM_CATALOG_READ')")
+    public Map<String, Long> pendingCount(@PathVariable String storefront) {
+        Storefront sf = Storefront.fromPath(storefront);
+        CurrentUser.admin(sf);
+        return Map.of("pending", service.pendingCount(sf));
+    }
+
+    @PostMapping("/api/{storefront}/admin/reviews")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasAuthority('PERM_CATALOG_WRITE')")
+    public ReviewService.AdminReview staffCreate(@PathVariable String storefront,
+                                                 @RequestBody ReviewService.StaffReviewInput input) {
+        return service.staffCreate(CurrentUser.admin(Storefront.fromPath(storefront)), input);
     }
 
     @PatchMapping("/api/{storefront}/admin/reviews/{id}")

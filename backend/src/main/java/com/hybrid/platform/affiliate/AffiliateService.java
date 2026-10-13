@@ -4,6 +4,7 @@ import com.hybrid.platform.affiliate.AffiliateRepositories.ClickRepository;
 import com.hybrid.platform.affiliate.AffiliateRepositories.ConversionRepository;
 import com.hybrid.platform.affiliate.AffiliateRepositories.LinkRepository;
 import com.hybrid.platform.affiliate.AffiliateRepositories.MerchantRepository;
+import com.hybrid.platform.affiliate.AffiliateRepositories.PricePointRepository;
 import com.hybrid.platform.catalog.CatalogEnums.ProductStatus;
 import com.hybrid.platform.catalog.CatalogEnums.SellingMethod;
 import com.hybrid.platform.catalog.CatalogQueryService;
@@ -34,22 +35,52 @@ public class AffiliateService {
     public static final String DEFAULT_DISCLOSURE = "We may earn a commission when you buy through this link, at no extra cost to you.";
     public static final int PRICE_DROP_MIN_PERCENT = 5;
 
-    /** {@code displayPriceMinor} is null when no price was entered or the price is older than the allowed age. */
-    public record OfferView(String merchantName, Long displayPriceMinor, Instant priceCheckedAt, boolean priceStale,
-                            String disclosure, String goUrl) {
+    /**
+     * One partner offer as shoppers see it. {@code displayPriceMinor} (and {@code listPriceMinor}) are null when no price
+     * was entered, the price is older than the allowed age, or the merchant's prices must not be shown
+     * ({@code priceHidden}: shoppers see "Check price on ..."). {@code offerCount} is how many stores offer the product.
+     */
+    public record OfferView(Long linkId, String merchantName, String merchantDomain, Long displayPriceMinor,
+                            Long listPriceMinor, Instant priceCheckedAt, boolean priceStale, boolean priceHidden,
+                            String disclosure, String goUrl, int offerCount) {
+
+        /** Percentage off the original price, when both prices are shown and the offer is actually cheaper. */
+        public Integer discountPercent() {
+            return discount(displayPriceMinor, listPriceMinor);
+        }
     }
 
     public record LinkView(Long id, Long productId, String productTitle, String code, String goUrl, String destinationUrl,
                            Long merchantId, String merchantName, String merchantDomain, Long displayPriceMinor,
-                           Instant priceCheckedAt, boolean priceStale, String disclosure, boolean active, long clicks30d) {
+                           Long listPriceMinor, Instant priceCheckedAt, boolean priceStale, boolean merchantHidesPrices,
+                           String disclosure, boolean active, long clicks30d,
+                           String healthStatus, Instant healthCheckedAt, String healthDetail) {
     }
 
     public record MerchantView(Long id, String name, String domain, String subIdParam, boolean allowHttp, boolean active,
-                               Instant createdAt) {
+                               boolean hidePrices, Instant createdAt) {
     }
 
-    public record SetLinkCommand(String url, Long displayPriceMinor, String disclosure, String merchantName,
-                                 boolean confirmNewDomain) {
+    public record SetLinkCommand(String url, Long displayPriceMinor, Long listPriceMinor, String disclosure,
+                                 String merchantName, boolean confirmNewDomain) {
+    }
+
+    /** Recorded price movement for a product over the last 30 days, based on prices shoppers could see. */
+    public record PriceInsight(Long low30Minor, Long high30Minor, boolean lowest30d, Integer dropPercent7d) {
+    }
+
+    public record PriceDrop(Long productId, long oldPriceMinor, long newPriceMinor, int percent, Instant at) {
+    }
+
+    /** Best offer first: lowest shown price, then offers without a shown price, oldest link first. */
+    static final Comparator<OfferView> OFFER_ORDER = Comparator
+            .comparing((OfferView o) -> o.displayPriceMinor() == null ? Long.MAX_VALUE : o.displayPriceMinor())
+            .thenComparing(OfferView::linkId);
+
+    public static Integer discount(Long price, Long listPrice) {
+        if (price == null || listPrice == null || listPrice <= 0 || price >= listPrice) return null;
+        int pct = (int) ((listPrice - price) * 100 / listPrice);
+        return pct >= 1 ? pct : null;
     }
 
     public record ConversionView(Long id, String externalTxnId, String clickRef, Long merchantId, Long saleAmountMinor,
@@ -76,6 +107,7 @@ public class AffiliateService {
     private final LinkRepository links;
     private final ClickRepository clicks;
     private final ConversionRepository conversions;
+    private final PricePointRepository pricePoints;
     private final CatalogQueryService catalog;
     private final AuditService audit;
     private final CryptoService crypto;
@@ -83,14 +115,15 @@ public class AffiliateService {
     private final Duration priceMaxAge;
 
     public AffiliateService(MerchantRepository merchants, LinkRepository links, ClickRepository clicks,
-                            ConversionRepository conversions, CatalogQueryService catalog, AuditService audit,
-                            CryptoService crypto, ApplicationEventPublisher publisher,
+                            ConversionRepository conversions, PricePointRepository pricePoints, CatalogQueryService catalog,
+                            AuditService audit, CryptoService crypto, ApplicationEventPublisher publisher,
                             @Value("${app.affiliate.price-max-age-days:7}") int priceMaxAgeDays) {
         this.publisher = publisher;
         this.merchants = merchants;
         this.links = links;
         this.clicks = clicks;
         this.conversions = conversions;
+        this.pricePoints = pricePoints;
         this.catalog = catalog;
         this.audit = audit;
         this.crypto = crypto;
@@ -99,20 +132,153 @@ public class AffiliateService {
 
     // ------------------------------------------------------------------ storefront queries
 
+    /** The best offer per product (see {@link #OFFER_ORDER}); products without a live offer are absent. */
     @Transactional(readOnly = true)
     public Map<Long, OfferView> offers(Collection<Long> productIds) {
-        Map<Long, OfferView> result = new HashMap<>();
+        Map<Long, OfferView> best = new HashMap<>();
+        offerLists(productIds).forEach((id, list) -> best.put(id, list.get(0)));
+        return best;
+    }
+
+    /** Every live offer per product, best first. */
+    @Transactional(readOnly = true)
+    public Map<Long, List<OfferView>> offerLists(Collection<Long> productIds) {
+        Map<Long, List<OfferView>> result = new HashMap<>();
         if (productIds.isEmpty()) return result;
         Instant now = Instant.now();
+        Map<Long, List<AffiliateLink>> live = new HashMap<>();
         for (AffiliateLink l : links.findByProductIdIn(productIds)) {
-            if (l.isActive() && l.getMerchant().isActive()) {
-                boolean stale = isStale(l, now);
-                result.put(l.getProductId(), new OfferView(l.getMerchant().getName(),
-                        stale ? null : l.getDisplayPriceMinor(), l.getPriceCheckedAt(), stale, l.getDisclosure(),
-                        "/go/" + l.getCode()));
+            if (isLive(l)) live.computeIfAbsent(l.getProductId(), k -> new ArrayList<>()).add(l);
+        }
+        live.forEach((productId, list) -> result.put(productId, list.stream()
+                .map(l -> offerView(l, now, list.size())).sorted(OFFER_ORDER).toList()));
+        return result;
+    }
+
+    private OfferView offerView(AffiliateLink l, Instant now, int count) {
+        AffiliateMerchant m = l.getMerchant();
+        boolean stale = isStale(l, now);
+        boolean show = !stale && !m.isHidePrices();
+        return new OfferView(l.getId(), m.getName(), m.getDomain(), show ? l.getDisplayPriceMinor() : null,
+                show && l.getDisplayPriceMinor() != null ? l.getListPriceMinor() : null, l.getPriceCheckedAt(), stale,
+                m.isHidePrices(), l.getDisclosure(), "/go/" + l.getCode(), count);
+    }
+
+    /** Shown to shoppers: active, store active, and not found dead by the nightly link check. */
+    private static boolean isLive(AffiliateLink l) {
+        return l.isActive() && l.getMerchant().isActive() && !l.isBroken();
+    }
+
+    /**
+     * Lowest/highest shown price in the last 30 days and whether today's best price is the lowest of them (only
+     * claimed when the price really was higher at some point), plus the latest drop of at least
+     * {@link #PRICE_DROP_MIN_PERCENT}% in the last 7 days.
+     */
+    @Transactional(readOnly = true)
+    public Map<Long, PriceInsight> insights(Map<Long, OfferView> best) {
+        Map<Long, PriceInsight> out = new HashMap<>();
+        List<Long> priced = best.entrySet().stream().filter(e -> e.getValue().displayPriceMinor() != null).map(Map.Entry::getKey).toList();
+        if (priced.isEmpty()) return out;
+        Instant now = Instant.now();
+        Instant since30 = now.minus(Duration.ofDays(30));
+        Instant since7 = now.minus(Duration.ofDays(7));
+        Map<Long, List<AffiliatePricePoint>> byProduct = new HashMap<>();
+        for (AffiliatePricePoint p : pricePoints.findByProductIdInAndRecordedAtAfterOrderByRecordedAtAsc(priced, now.minus(Duration.ofDays(60)))) {
+            byProduct.computeIfAbsent(p.getProductId(), k -> new ArrayList<>()).add(p);
+        }
+        for (Long id : priced) {
+            OfferView offer = best.get(id);
+            long current = offer.displayPriceMinor();
+            List<AffiliatePricePoint> points = byProduct.getOrDefault(id, List.of());
+            long low = current, high = current;
+            for (AffiliatePricePoint p : points) {
+                if (p.getRecordedAt().isBefore(since30)) continue;
+                low = Math.min(low, p.getPriceMinor());
+                high = Math.max(high, p.getPriceMinor());
+            }
+            boolean lowest = current <= low && high > current;
+            Integer drop = null;
+            List<AffiliatePricePoint> own = points.stream().filter(p -> p.getLinkId().equals(offer.linkId())).toList();
+            for (int i = own.size() - 1; i > 0; i--) {
+                AffiliatePricePoint cur = own.get(i);
+                if (cur.getRecordedAt().isBefore(since7)) break;
+                long before = own.get(i - 1).getPriceMinor();
+                if (cur.getPriceMinor() == current && isPriceDrop(before, cur.getPriceMinor())) {
+                    drop = (int) ((before - current) * 100 / before);
+                    break;
+                }
+            }
+            out.put(id, new PriceInsight(low, high, lowest, drop));
+        }
+        return out;
+    }
+
+    /** Price cuts of at least {@link #PRICE_DROP_MIN_PERCENT}% recorded since {@code since}; the latest per product. */
+    @Transactional(readOnly = true)
+    public List<PriceDrop> recentPriceDrops(Storefront sf, Instant since) {
+        Map<Long, PriceDrop> latest = new HashMap<>();
+        List<AffiliatePricePoint> history = pricePoints.historyOfLinksChangedSince(sf, since);
+        for (int i = 1; i < history.size(); i++) {
+            AffiliatePricePoint prev = history.get(i - 1);
+            AffiliatePricePoint cur = history.get(i);
+            if (!prev.getLinkId().equals(cur.getLinkId()) || cur.getRecordedAt().isBefore(since)) continue;
+            if (isPriceDrop(prev.getPriceMinor(), cur.getPriceMinor())) {
+                int pct = (int) ((prev.getPriceMinor() - cur.getPriceMinor()) * 100 / prev.getPriceMinor());
+                PriceDrop d = new PriceDrop(cur.getProductId(), prev.getPriceMinor(), cur.getPriceMinor(), pct, cur.getRecordedAt());
+                latest.merge(cur.getProductId(), d, (a, b) -> a.at().isAfter(b.at()) ? a : b);
             }
         }
-        return result;
+        return latest.values().stream().sorted(Comparator.comparing(PriceDrop::at).reversed()).toList();
+    }
+
+    /** Product ids ranked by real partner clicks in the last {@code days} days. */
+    @Transactional(readOnly = true)
+    public List<Long> trendingProductIds(Storefront sf, int days, int limit) {
+        return clicks.topProductsSince(sf, Instant.now().minus(Duration.ofDays(days)), PageRequest.of(0, limit)).stream()
+                .map(r -> (Long) r[0]).toList();
+    }
+
+    /** Real (non-bot) clicks to partner stores for one product in the last {@code days} days. */
+    @Transactional(readOnly = true)
+    public long clicksSince(Long productId, int days) {
+        return clicks.countForProductSince(productId, Instant.now().minus(Duration.ofDays(days)));
+    }
+
+    /** Real clicks per product in the last {@code days} days (products without clicks are absent). */
+    @Transactional(readOnly = true)
+    public Map<Long, Long> productClickCounts(Storefront sf, int days) {
+        Map<Long, Long> out = new HashMap<>();
+        for (Object[] r : clicks.topProductsSince(sf, Instant.now().minus(Duration.ofDays(days)), PageRequest.of(0, 5000))) {
+            out.put((Long) r[0], (Long) r[1]);
+        }
+        return out;
+    }
+
+    /**
+     * The approved store for an affiliate URL. A new domain is only approved when the admin confirms it (redirects can
+     * then go to that website); disabled stores and plain http (unless allowed for the store) are refused.
+     */
+    @Transactional
+    public AffiliateMerchant approvedMerchant(AdminPrincipal admin, URI uri, boolean confirmNewDomain, String merchantName) {
+        Storefront sf = admin.storefront();
+        String domain = AffiliateUrlPolicy.domainKey(uri);
+        AffiliateMerchant merchant = merchants.findByStorefrontAndDomain(sf, domain).orElse(null);
+        if (merchant == null) {
+            if (!confirmNewDomain) {
+                throw new ApiException(HttpStatus.CONFLICT, "AFFILIATE_DOMAIN_UNCONFIRMED",
+                        "'" + domain + "' is a new affiliate domain. Confirm it to allow redirects to this website.",
+                        Map.of("domain", domain));
+            }
+            String name = merchantName == null || merchantName.isBlank() ? domain : merchantName.trim();
+            merchant = new AffiliateMerchant(sf, name, domain);
+            merchant.setAllowHttp("http".equalsIgnoreCase(uri.getScheme()));
+            merchant = merchants.save(merchant);
+            audit.record(admin, "AFFILIATE_DOMAIN_APPROVED", "AffiliateMerchant", merchant.getId(), domain);
+        } else if (!merchant.isActive()) {
+            throw ApiException.rule("AFFILIATE_MERCHANT_DISABLED", "The merchant '" + merchant.getName() + "' is disabled");
+        }
+        AffiliateUrlPolicy.requireAllowedScheme(uri, merchant.isAllowHttp());
+        return merchant;
     }
 
     public Duration priceMaxAge() {
@@ -131,7 +297,7 @@ public class AffiliateService {
 
     @Transactional(readOnly = true)
     public boolean hasActiveLink(Long productId) {
-        return links.findByProductId(productId).filter(l -> l.isActive() && l.getMerchant().isActive()).isPresent();
+        return links.findByProductIdOrderByIdAsc(productId).stream().anyMatch(AffiliateService::isLive);
     }
 
     // ------------------------------------------------------------------ redirect
@@ -172,78 +338,119 @@ public class AffiliateService {
 
     // ------------------------------------------------------------------ admin: links
 
+    /** All of a product's partner links (active and paused), oldest first. */
     @Transactional(readOnly = true)
-    public Optional<LinkView> adminLink(Storefront sf, Long productId) {
-        return links.findByProductId(productId).filter(l -> l.getStorefront() == sf)
-                .map(l -> toView(l, null, clickCounts(sf, 30)));
+    public List<LinkView> adminLinks(Storefront sf, Long productId) {
+        Map<Long, Long> counts = clickCounts(sf, 30);
+        return links.findByProductIdOrderByIdAsc(productId).stream().filter(l -> l.getStorefront() == sf)
+                .map(l -> toView(l, null, counts)).toList();
     }
 
+    /** Adds the link for the URL's store, or updates the product's existing link to that store. */
     @Transactional
     public LinkView setLink(AdminPrincipal admin, Long productId, SetLinkCommand cmd) {
+        return saveLink(admin, productId, null, cmd);
+    }
+
+    /** Edits one specific link (its URL may move to another store the product is not linked to yet). */
+    @Transactional
+    public LinkView updateLink(AdminPrincipal admin, Long productId, Long linkId, SetLinkCommand cmd) {
+        return saveLink(admin, productId, linkId, cmd);
+    }
+
+    /** Pauses or resumes one store's offer; paused offers are hidden from shoppers but keep their click history. */
+    @Transactional
+    public LinkView setLinkActive(AdminPrincipal admin, Long productId, Long linkId, boolean active) {
+        AffiliateLink link = requireLink(admin.storefront(), productId, linkId);
+        link.setActive(active);
+        audit.record(admin, active ? "AFFILIATE_LINK_RESUMED" : "AFFILIATE_LINK_PAUSED", "Product", productId,
+                "merchant=" + link.getMerchant().getDomain());
+        return toView(link, null, Map.of());
+    }
+
+    private LinkView saveLink(AdminPrincipal admin, Long productId, Long linkId, SetLinkCommand cmd) {
         Storefront sf = admin.storefront();
         var product = catalog.requireProduct(sf, productId);
         if (product.sellingMethod() != SellingMethod.AFFILIATE) {
             throw ApiException.rule("NOT_AFFILIATE_PRODUCT", "Only AFFILIATE products can have an affiliate link");
         }
         URI uri = AffiliateUrlPolicy.parse(cmd.url());
-        String domain = AffiliateUrlPolicy.domainKey(uri);
-        AffiliateMerchant merchant = merchants.findByStorefrontAndDomain(sf, domain).orElse(null);
-        if (merchant == null) {
-            if (!cmd.confirmNewDomain()) {
-                throw new ApiException(HttpStatus.CONFLICT, "AFFILIATE_DOMAIN_UNCONFIRMED",
-                        "'" + domain + "' is a new affiliate domain. Confirm it to allow redirects to this website.",
-                        Map.of("domain", domain));
-            }
-            String name = cmd.merchantName() == null || cmd.merchantName().isBlank() ? domain : cmd.merchantName().trim();
-            merchant = new AffiliateMerchant(sf, name, domain);
-            merchant.setAllowHttp("http".equalsIgnoreCase(uri.getScheme()));
-            merchant = merchants.save(merchant);
-            audit.record(admin, "AFFILIATE_DOMAIN_APPROVED", "AffiliateMerchant", merchant.getId(), domain);
-        } else if (!merchant.isActive()) {
-            throw ApiException.rule("AFFILIATE_MERCHANT_DISABLED", "The merchant '" + merchant.getName() + "' is disabled");
-        }
-        AffiliateUrlPolicy.requireAllowedScheme(uri, merchant.isAllowHttp());
-        if (cmd.displayPriceMinor() != null && cmd.displayPriceMinor() < 0) {
-            throw ApiException.rule("INVALID_PRICE", "Display price cannot be negative");
+        AffiliateMerchant merchant = approvedMerchant(admin, uri, cmd.confirmNewDomain(), cmd.merchantName());
+        if ((cmd.displayPriceMinor() != null && cmd.displayPriceMinor() < 0) || (cmd.listPriceMinor() != null && cmd.listPriceMinor() < 0)) {
+            throw ApiException.rule("INVALID_PRICE", "Prices cannot be negative");
         }
 
-        AffiliateLink link = links.findByProductId(productId).orElse(null);
-        if (link == null) {
-            link = new AffiliateLink(sf, productId, newCode());
+        List<AffiliateLink> existing = links.findByProductIdOrderByIdAsc(productId);
+        final Long merchantId = merchant.getId();
+        AffiliateLink sameStore = existing.stream().filter(l -> l.getMerchant().getId().equals(merchantId)).findFirst().orElse(null);
+        AffiliateLink link;
+        if (linkId != null) {
+            link = existing.stream().filter(l -> l.getId().equals(linkId)).findFirst()
+                    .orElseThrow(() -> ApiException.notFound("AFFILIATE_LINK_NOT_FOUND", "Link not found"));
+            if (sameStore != null && !sameStore.getId().equals(link.getId())) {
+                throw ApiException.conflict("MERCHANT_ALREADY_LINKED",
+                        "This product already has a link to " + merchant.getName() + ". Edit that link instead.");
+            }
+        } else {
+            link = sameStore != null ? sameStore : new AffiliateLink(sf, productId, newCode());
         }
         Long oldPrice = link.getDisplayPriceMinor();
         Long newPrice = cmd.displayPriceMinor();
         link.setMerchant(merchant);
+        if (!cmd.url().trim().equals(link.getDestinationUrl())) link.resetHealth();
         link.setDestinationUrl(cmd.url().trim());
         if (!Objects.equals(oldPrice, newPrice)) {
             link.setPriceCheckedAt(newPrice == null ? null : Instant.now());
         }
         link.setDisplayPriceMinor(newPrice);
+        link.setListPriceMinor(cmd.listPriceMinor() == null || cmd.listPriceMinor() == 0 ? null : cmd.listPriceMinor());
         link.setDisclosure(cmd.disclosure() == null || cmd.disclosure().isBlank() ? DEFAULT_DISCLOSURE : cmd.disclosure().trim());
         link.setActive(true);
         link = links.save(link);
+        if (newPrice != null && !Objects.equals(oldPrice, newPrice)) {
+            pricePoints.save(new AffiliatePricePoint(sf, productId, link.getId(), newPrice, Instant.now()));
+        }
         catalog.lockTypes(List.of(productId));
-        audit.record(admin, "AFFILIATE_LINK_SET", "Product", productId, "domain=" + domain);
-        if (isPriceDrop(oldPrice, newPrice) && product.status() == ProductStatus.PUBLISHED) {
+        audit.record(admin, "AFFILIATE_LINK_SET", "Product", productId, "domain=" + merchant.getDomain());
+        // Stores that forbid showing prices never get price-drop alerts (they would reveal the price).
+        if (isPriceDrop(oldPrice, newPrice) && product.status() == ProductStatus.PUBLISHED && !merchant.isHidePrices()) {
             publisher.publishEvent(new AffiliateEvents.PriceDropped(sf, productId, product.title(), merchant.getName(),
                     oldPrice, newPrice));
         }
         return toView(link, product.title(), Map.of());
     }
 
-    /** Marks the current partner price as re-checked now, so it shows on the storefront again. */
+    /** Marks a link's partner price as re-checked now, so it shows on the storefront again. */
     @Transactional
-    public LinkView confirmPrice(AdminPrincipal admin, Long productId) {
-        Storefront sf = admin.storefront();
-        var product = catalog.requireProduct(sf, productId);
-        AffiliateLink link = links.findByProductId(productId).filter(l -> l.getStorefront() == sf)
-                .orElseThrow(() -> ApiException.notFound("AFFILIATE_LINK_NOT_FOUND", "This product has no affiliate link yet"));
+    public LinkView confirmPrice(AdminPrincipal admin, Long productId, Long linkId) {
+        AffiliateLink link = requireLink(admin.storefront(), productId, linkId);
         if (link.getDisplayPriceMinor() == null) {
             throw ApiException.rule("NO_DISPLAY_PRICE", "Enter a display price first");
         }
         link.setPriceCheckedAt(Instant.now());
         audit.record(admin, "AFFILIATE_PRICE_CONFIRMED", "Product", productId, "price=" + link.getDisplayPriceMinor());
-        return toView(link, product.title(), Map.of());
+        return toView(link, null, Map.of());
+    }
+
+    /** Re-confirms every priced link of the product (the single-link endpoint kept for older clients). */
+    @Transactional
+    public LinkView confirmPrice(AdminPrincipal admin, Long productId) {
+        Storefront sf = admin.storefront();
+        catalog.requireProduct(sf, productId);
+        List<AffiliateLink> priced = links.findByProductIdOrderByIdAsc(productId).stream()
+                .filter(l -> l.getStorefront() == sf && l.getDisplayPriceMinor() != null).toList();
+        if (priced.isEmpty()) {
+            throw ApiException.rule("NO_DISPLAY_PRICE", "Enter a display price first");
+        }
+        priced.forEach(l -> l.setPriceCheckedAt(Instant.now()));
+        audit.record(admin, "AFFILIATE_PRICE_CONFIRMED", "Product", productId, "links=" + priced.size());
+        return toView(priced.get(0), null, Map.of());
+    }
+
+    private AffiliateLink requireLink(Storefront sf, Long productId, Long linkId) {
+        catalog.requireProduct(sf, productId);
+        return links.findById(linkId).filter(l -> l.getStorefront() == sf && l.getProductId().equals(productId))
+                .orElseThrow(() -> ApiException.notFound("AFFILIATE_LINK_NOT_FOUND", "Link not found"));
     }
 
     @Transactional(readOnly = true)
@@ -261,7 +468,8 @@ public class AffiliateService {
     }
 
     @Transactional
-    public MerchantView updateMerchant(AdminPrincipal admin, Long id, String name, String subIdParam, Boolean allowHttp, Boolean active) {
+    public MerchantView updateMerchant(AdminPrincipal admin, Long id, String name, String subIdParam, Boolean allowHttp,
+                                       Boolean active, Boolean hidePrices) {
         AffiliateMerchant m = merchants.findByIdAndStorefront(id, admin.storefront())
                 .orElseThrow(() -> ApiException.notFound("MERCHANT_NOT_FOUND", "Merchant not found"));
         AffiliateUrlPolicy.requireValidParamName(subIdParam);
@@ -269,8 +477,9 @@ public class AffiliateService {
         if (subIdParam != null) m.setSubIdParam(subIdParam);
         if (allowHttp != null) m.setAllowHttp(allowHttp);
         if (active != null) m.setActive(active);
+        if (hidePrices != null) m.setHidePrices(hidePrices);
         audit.record(admin, "AFFILIATE_MERCHANT_UPDATED", "AffiliateMerchant", id,
-                "subId=" + m.getSubIdParam() + " http=" + m.isAllowHttp() + " active=" + m.isActive());
+                "subId=" + m.getSubIdParam() + " http=" + m.isAllowHttp() + " active=" + m.isActive() + " hidePrices=" + m.isHidePrices());
         return toView(m);
     }
 
@@ -476,8 +685,9 @@ public class AffiliateService {
         return new BigDecimal(value.trim()).setScale(2, RoundingMode.HALF_UP).movePointRight(2).longValueExact();
     }
 
-    private static boolean isBot(String ua) {
-        String u = ua.toLowerCase(Locale.ROOT);
+    /** Crawlers, link previews and scripts: their visits are not counted as shopper clicks. */
+    public static boolean isBot(String ua) {
+        String u = ua == null ? "" : ua.toLowerCase(Locale.ROOT);
         return u.isEmpty() || u.contains("bot") || u.contains("crawl") || u.contains("spider") || u.contains("preview")
                 || u.contains("facebookexternalhit") || u.contains("curl") || u.contains("wget") || u.contains("python-requests");
     }
@@ -495,12 +705,14 @@ public class AffiliateService {
     private LinkView toView(AffiliateLink l, String title, Map<Long, Long> counts) {
         AffiliateMerchant m = l.getMerchant();
         return new LinkView(l.getId(), l.getProductId(), title, l.getCode(), "/go/" + l.getCode(), l.getDestinationUrl(),
-                m.getId(), m.getName(), m.getDomain(), l.getDisplayPriceMinor(), l.getPriceCheckedAt(),
-                isStale(l, Instant.now()), l.getDisclosure(), l.isActive(), counts.getOrDefault(l.getId(), 0L));
+                m.getId(), m.getName(), m.getDomain(), l.getDisplayPriceMinor(), l.getListPriceMinor(), l.getPriceCheckedAt(),
+                isStale(l, Instant.now()), m.isHidePrices(), l.getDisclosure(), l.isActive(), counts.getOrDefault(l.getId(), 0L),
+                l.getHealthStatus(), l.getHealthCheckedAt(), l.getHealthDetail());
     }
 
     private static MerchantView toView(AffiliateMerchant m) {
-        return new MerchantView(m.getId(), m.getName(), m.getDomain(), m.getSubIdParam(), m.isAllowHttp(), m.isActive(), m.getCreatedAt());
+        return new MerchantView(m.getId(), m.getName(), m.getDomain(), m.getSubIdParam(), m.isAllowHttp(), m.isActive(),
+                m.isHidePrices(), m.getCreatedAt());
     }
 
     private static ConversionView toView(AffiliateConversion c) {

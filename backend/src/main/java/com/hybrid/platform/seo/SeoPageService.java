@@ -14,12 +14,17 @@ import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.content.ContentMarkup;
 import com.hybrid.platform.content.ContentPage;
 import com.hybrid.platform.content.ContentService;
+import com.hybrid.platform.guides.Guide;
+import com.hybrid.platform.guides.GuideService;
 import com.hybrid.platform.review.ReviewService;
+import com.hybrid.platform.offers.OfferService;
+import com.hybrid.platform.stories.WebStoryService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.text.NumberFormat;
+import java.time.Instant;
 import java.util.*;
 
 import static com.hybrid.platform.seo.SeoPage.esc;
@@ -42,17 +47,23 @@ public class SeoPageService {
     private final CatalogPublicService catalog;
     private final ContentService content;
     private final ReviewService reviews;
+    private final WebStoryService stories;
+    private final OfferService offers;
+    private final GuideService guides;
     private final AppProperties props;
 
     public SeoPageService(SettingsService settings, ProductRepository products, CategoryRepository categories,
                           CatalogPublicService catalog, ContentService content, ReviewService reviews,
-                          AppProperties props) {
+                          WebStoryService stories, OfferService offers, GuideService guides, AppProperties props) {
+        this.offers = offers;
+        this.guides = guides;
         this.settings = settings;
         this.products = products;
         this.categories = categories;
         this.catalog = catalog;
         this.content = content;
         this.reviews = reviews;
+        this.stories = stories;
         this.props = props;
     }
 
@@ -91,6 +102,14 @@ public class SeoPageService {
         }
         body.append(grid(sf, list.items()));
         body.append(pager(home, page, list.totalPages()));
+        List<WebStoryService.StoryCard> latestStories = page == 0 ? stories.cards(sf, 8) : List.of();
+        if (!latestStories.isEmpty()) {
+            body.append("<nav class=\"ssr-links\" aria-label=\"Web Stories\"><a href=\"").append(esc(home + "/stories")).append("\">Web Stories</a>");
+            for (var w : latestStories) {
+                body.append("<a href=\"").append(esc(w.url())).append("\">").append(esc(w.title())).append("</a>");
+            }
+            body.append("</nav>");
+        }
         body.append("</div>");
 
         SeoPage p = base(sf, s)
@@ -176,8 +195,10 @@ public class SeoPageService {
 
         Long low = null, high = null;
         boolean anyAvailable = false;
+        boolean partnerOffer = "AFFILIATE".equals(d.sellingMethod());
         for (var v : d.variants()) {
-            if (v.priceMinor() == null) continue;
+            // Partner offers are described by the partner stores' offers below, not as our own sale.
+            if (partnerOffer || v.priceMinor() == null) continue;
             low = low == null ? v.priceMinor() : Math.min(low, v.priceMinor());
             high = high == null ? v.priceMinor() : Math.max(high, v.priceMinor());
             anyAvailable |= v.available();
@@ -209,8 +230,16 @@ public class SeoPageService {
                     .append(rating.average()).append(" / 5 (").append(rating.count()).append(rating.count() == 1 ? " review" : " reviews").append(")</p>");
         }
         Long shown = low != null ? low : affiliatePrice;
-        if (shown != null) body.append("<p class=\"price\">").append(esc(money(shown))).append("</p>");
+        if (shown != null) {
+            body.append("<p class=\"price\">").append(esc(money(shown))).append("</p>");
+        } else if (d.affiliate() != null) {
+            body.append("<p class=\"price\">Check price on ").append(esc(d.affiliate().merchantName())).append("</p>");
+        }
         if (d.summary() != null) body.append("<p>").append(esc(d.summary())).append("</p>");
+        appendList(body, "Highlights", "highlights", d.highlights());
+        if (d.verdict() != null) body.append("<h2>Our verdict</h2><p>").append(esc(d.verdict())).append("</p>");
+        appendList(body, "Pros", "pros", d.pros());
+        appendList(body, "Cons", "cons", d.cons());
         if (d.description() != null) {
             body.append("<h2>Description</h2><div class=\"description\">").append(esc(d.description())).append("</div>");
         }
@@ -251,13 +280,22 @@ public class SeoPageService {
             offer.put("seller", Map.of("@type", "Organization", "name", s.getStoreName()));
             ld.put("offers", offer);
         } else if (affiliatePrice != null) {
+            // Only stores whose prices may be shown take part; hidden prices never reach structured data either.
+            List<CatalogPublicService.AffiliateOffer> priced = d.offers().stream().filter(o -> o.displayPriceMinor() != null).toList();
             Map<String, Object> offer = new LinkedHashMap<>();
-            offer.put("@type", "Offer");
-            offer.put("price", decimal(affiliatePrice));
+            if (priced.size() > 1) {
+                offer.put("@type", "AggregateOffer");
+                offer.put("lowPrice", decimal(priced.get(0).displayPriceMinor()));
+                offer.put("highPrice", decimal(priced.stream().mapToLong(CatalogPublicService.AffiliateOffer::displayPriceMinor).max().orElseThrow()));
+                offer.put("offerCount", priced.size());
+            } else {
+                offer.put("@type", "Offer");
+                offer.put("price", decimal(affiliatePrice));
+                offer.put("seller", Map.of("@type", "Organization", "name", d.affiliate().merchantName()));
+            }
             offer.put("priceCurrency", "INR");
             offer.put("availability", "https://schema.org/InStock");
             offer.put("url", abs(path));
-            offer.put("seller", Map.of("@type", "Organization", "name", d.affiliate().merchantName()));
             ld.put("offers", offer);
         }
         if (rating.count() > 0) {
@@ -277,6 +315,21 @@ public class SeoPageService {
             ld.put("review", rv);
         }
         p.jsonLd(ld);
+        // Product videos: Google shows them in video results only with a thumbnail, so fall back to the product image.
+        for (var v : d.videos()) {
+            String poster = v.posterUrl() != null ? abs(v.posterUrl()) : image;
+            if (poster == null) continue;
+            Map<String, Object> video = new LinkedHashMap<>();
+            video.put("@context", "https://schema.org");
+            video.put("@type", "VideoObject");
+            video.put("name", v.title());
+            video.put("description", description);
+            video.put("thumbnailUrl", List.of(poster));
+            video.put("uploadDate", v.uploadedAt().truncatedTo(java.time.temporal.ChronoUnit.SECONDS).toString());
+            video.put("contentUrl", abs(v.url()));
+            if (v.durationSeconds() != null) video.put("duration", java.time.Duration.ofSeconds(v.durationSeconds()).toString());
+            p.jsonLd(video);
+        }
         p.jsonLd(breadcrumbLd(sf, s, trail));
         return Optional.of(p);
     }
@@ -300,6 +353,240 @@ public class SeoPageService {
                 .description(description).canonical(abs(path)).ogType("article").body(body);
         p.jsonLd(breadcrumbLd(sf, s, List.of(Map.entry(c.getTitle(), path))));
         return Optional.of(p);
+    }
+
+    // ------------------------------------------------------------------ coupons & store pages
+
+    /** /{sf}/offers: every live coupon code and deal, grouped by store. */
+    @Transactional
+    public SeoPage offersPage(Storefront sf) {
+        StoreSettings s = settings.entity(sf);
+        String path = "/" + sf.path() + "/offers";
+        List<OfferService.PublicOffer> live = offers.live(sf, null, null);
+        Map<String, List<OfferService.PublicOffer>> byStore = new LinkedHashMap<>();
+        live.forEach(o -> byStore.computeIfAbsent(o.merchantName(), k -> new ArrayList<>()).add(o));
+        List<String> names = new ArrayList<>(byStore.keySet());
+        String stores = names.size() <= 1 ? String.join("", names)
+                : names.size() <= 5 ? String.join(", ", names.subList(0, names.size() - 1)) + " and " + names.get(names.size() - 1)
+                : String.join(", ", names.subList(0, 5)) + " and more";
+        String description = live.isEmpty()
+                ? "Coupon codes and deals from our partner stores at " + s.getStoreName() + "."
+                : (live.size() == 1 ? "1 working coupon or deal" : live.size() + " working coupon codes and deals")
+                + " from " + stores + ", checked by " + s.getStoreName() + ".";
+        StringBuilder body = new StringBuilder("<div class=\"container\">");
+        body.append(breadcrumb(sf, s, List.of(Map.entry("Coupons & offers", path))));
+        body.append("<header class=\"page-title\"><h1>Coupons &amp; offers.</h1><p class=\"muted\">")
+                .append(esc(description)).append("</p></header>");
+        if (live.isEmpty()) {
+            body.append("<div class=\"card empty\">No offers right now. Check back soon.</div>");
+        }
+        for (var e : byStore.entrySet()) {
+            String domain = e.getValue().get(0).merchantDomain();
+            body.append("<section class=\"offer-store\"><div class=\"section-head\"><h2>").append(esc(e.getKey()))
+                    .append(". <span class=\"sub\">").append(e.getValue().size()).append(e.getValue().size() == 1 ? " offer" : " offers")
+                    .append("</span></h2><a class=\"see-all\" href=\"").append(esc("/" + sf.path() + "/store/" + domain))
+                    .append("\">All ").append(esc(e.getKey())).append(" deals</a></div><div class=\"offer-grid\">");
+            e.getValue().forEach(o -> body.append(offerCard(o)));
+            body.append("</div></section>");
+        }
+        body.append("</div>");
+        SeoPage p = base(sf, s).title("Coupons & offers | " + s.getStoreName()).description(description).canonical(abs(path))
+                .noindex(live.isEmpty()).body(body.toString());
+        p.jsonLd(breadcrumbLd(sf, s, List.of(Map.entry("Coupons & offers", path))));
+        return p;
+    }
+
+    /** One offer: title, details, expiry, and a button that copies the code and opens the store (see store.js). */
+    static String offerCard(OfferService.PublicOffer o) {
+        StringBuilder b = new StringBuilder("<article class=\"offer-card\"><div class=\"offer-store-name\">")
+                .append(esc(o.merchantName())).append("</div><h3>").append(esc(o.title())).append("</h3>");
+        if (o.description() != null) b.append("<p class=\"muted\">").append(esc(o.description())).append("</p>");
+        b.append("<div class=\"offer-meta\">");
+        if (o.verifiedAt() != null) b.append("<span class=\"badge green\">Verified</span> ");
+        if (o.endsAt() != null) {
+            b.append("<span class=\"muted small\">Ends ").append(esc(o.endsAt().atZone(java.time.ZoneId.of("Asia/Kolkata"))
+                    .format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH)))).append("</span>");
+        }
+        b.append("</div>");
+        if (o.code() != null) {
+            b.append("<button class=\"btn offer-cta\" type=\"button\" data-offer-go=\"").append(esc(o.goUrl())).append("\" data-offer-code=\"")
+                    .append(esc(o.code())).append("\">Copy code &amp; go to store</button>");
+        } else {
+            b.append("<a class=\"btn offer-cta\" href=\"").append(esc(o.goUrl()))
+                    .append("\" target=\"_blank\" rel=\"sponsored nofollow noopener\">Get this deal</a>");
+        }
+        return b.append("</article>").toString();
+    }
+
+    /** /{sf}/store/{domain}: a partner store's deals and coupons (the page itself is drawn by store.js). */
+    @Transactional
+    public Optional<SeoPage> storePage(Storefront sf, String domain) {
+        Optional<CatalogPublicService.StoreView> store = catalog.stores(sf).stream().filter(st -> st.domain().equalsIgnoreCase(domain)).findFirst();
+        if (store.isEmpty()) return Optional.empty();
+        StoreSettings s = settings.entity(sf);
+        String name = store.get().name();
+        String path = "/" + sf.path() + "/store/" + store.get().domain();
+        List<OfferService.PublicOffer> live = offers.live(sf, store.get().domain(), null);
+        PageResponse<CatalogPublicService.ProductCard> list = catalog.browse(sf, null, null, null, null, null, store.get().domain(),
+                null, null, null, 0, 24);
+        String description = name + " deals" + (live.isEmpty() ? "" : " and " + live.size() + (live.size() == 1 ? " coupon" : " coupons"))
+                + " hand-picked by " + s.getStoreName() + ". Compare prices before you buy.";
+        StringBuilder body = new StringBuilder("<div class=\"container ssr\">");
+        body.append(breadcrumb(sf, s, List.of(Map.entry(name, path))));
+        body.append("<h1>").append(esc(name)).append(" deals &amp; coupons</h1><p class=\"muted\">").append(esc(description)).append("</p>");
+        if (!live.isEmpty()) {
+            body.append("<div class=\"offer-grid\">");
+            live.forEach(o -> body.append(offerCard(o)));
+            body.append("</div>");
+        }
+        body.append(grid(sf, list.items()));
+        body.append("</div>");
+        SeoPage p = base(sf, s).title(name + " deals & coupons | " + s.getStoreName()).description(description).canonical(abs(path))
+                .noindex(list.items().isEmpty() && live.isEmpty()).body(body.toString());
+        p.jsonLd(breadcrumbLd(sf, s, List.of(Map.entry(name, path))));
+        if (!list.items().isEmpty()) p.jsonLd(itemList(sf, list.items()));
+        return Optional.of(p);
+    }
+
+    // ------------------------------------------------------------------ buying guides
+
+    /** /{sf}/guides: every published guide, newest first. */
+    @Transactional
+    public SeoPage guidesIndex(Storefront sf) {
+        StoreSettings s = settings.entity(sf);
+        String path = "/" + sf.path() + "/guides";
+        List<GuideService.GuideCard> list = guides.cards(sf, null, 50);
+        String description = "Honest buying guides from " + s.getStoreName() + ": what to buy, what to skip and the best prices in India right now.";
+        StringBuilder body = new StringBuilder("<div class=\"container\">");
+        body.append(breadcrumb(sf, s, List.of(Map.entry("Buying guides", path))));
+        body.append("<header class=\"page-title\"><h1>Buying guides.</h1><p class=\"muted\">").append(esc(description)).append("</p></header>");
+        if (list.isEmpty()) body.append("<div class=\"card empty\">No guides yet. Check back soon.</div>");
+        else body.append(guideGrid(list));
+        body.append("</div>");
+        SeoPage p = base(sf, s).title("Buying guides | " + s.getStoreName()).description(description).canonical(abs(path))
+                .noindex(list.isEmpty()).body(body.toString());
+        p.jsonLd(breadcrumbLd(sf, s, List.of(Map.entry("Buying guides", path))));
+        return p;
+    }
+
+    /** /{sf}/guides/{slug}: the article with its product cards. */
+    @Transactional
+    public Optional<SeoPage> guide(Storefront sf, String slug) {
+        return guides.published(sf, slug).map(g -> guidePage(sf, g, false));
+    }
+
+    /** The article page; {@code preview} also shows drafts and flags products that are not live. */
+    @Transactional
+    public SeoPage guidePage(Storefront sf, Guide g, boolean preview) {
+        StoreSettings s = settings.entity(sf);
+        String path = g.path();
+        GuideService.Rendered r = guides.render(sf, g.getBody(), preview);
+        String description = g.getMetaDescription() != null ? g.getMetaDescription() : truncate(GuideService.summaryOf(g), 160);
+        Instant updated = g.getUpdatedAt();
+        String date = (updated == null ? Instant.now() : updated).atZone(java.time.ZoneId.of("Asia/Kolkata"))
+                .format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH));
+        String cover = r.products().stream().map(CatalogPublicService.ProductCard::imageUrl).filter(Objects::nonNull).findFirst().orElse(null);
+        List<Map.Entry<String, String>> trail = List.of(Map.entry("Buying guides", "/" + sf.path() + "/guides"), Map.entry(g.getTitle(), path));
+
+        StringBuilder body = new StringBuilder("<div class=\"container narrow-content guide-page\">");
+        if (preview) {
+            body.append("<p class=\"note\">Preview").append(g.isPublished() ? "" : " of a draft — shoppers cannot see this guide yet").append(".</p>");
+        }
+        body.append(breadcrumb(sf, s, trail));
+        body.append("<article class=\"guide-article\"><header class=\"guide-head\"><p class=\"eyebrow\">Buying guide</p><h1>")
+                .append(esc(g.getTitle())).append("</h1>");
+        if (g.getSummary() != null) body.append("<p class=\"guide-summary\">").append(esc(g.getSummary())).append("</p>");
+        body.append("<p class=\"guide-meta muted small\">");
+        if (g.getAuthorName() != null) body.append("By ").append(esc(g.getAuthorName())).append(" · ");
+        body.append("Updated ").append(esc(date)).append(" · ").append(r.readMinutes()).append(" min read</p></header>");
+        body.append("<p class=\"guide-disclosure small muted\">We may earn a commission when you buy through links in this guide, at no extra cost to you. "
+                + "Prices and offers are set by the stores and can change.</p>");
+        if (r.toc().size() >= 3) {
+            body.append("<nav class=\"guide-toc\" aria-label=\"In this guide\"><strong>In this guide</strong><ol>");
+            r.toc().forEach(t -> body.append("<li><a href=\"#").append(t[0]).append("\">").append(t[1]).append("</a></li>"));
+            body.append("</ol></nav>");
+        }
+        body.append("<div class=\"content-body guide-body\">").append(r.html()).append("</div></article>");
+        List<GuideService.GuideCard> more = guides.cards(sf, null, 4).stream().filter(c -> !c.slug().equals(g.getSlug())).limit(3).toList();
+        if (!more.isEmpty()) body.append("<section class=\"guide-more\"><h2>More buying guides</h2>").append(guideGrid(more)).append("</section>");
+        body.append("</div>");
+
+        SeoPage p = base(sf, s).title(g.getMetaTitle() != null ? g.getMetaTitle() : g.getTitle() + " | " + s.getStoreName())
+                .description(description).canonical(abs(path)).ogType("article").noindex(preview || !g.isPublished())
+                .image(cover == null ? abs(LOGO.formatted(sf == Storefront.SHOP ? "elaashop" : "elaatech")) : abs(cover))
+                .body(body.toString());
+        Map<String, Object> article = new LinkedHashMap<>();
+        article.put("@context", "https://schema.org");
+        article.put("@type", "Article");
+        article.put("headline", g.getTitle().length() > 110 ? g.getTitle().substring(0, 110) : g.getTitle());
+        article.put("description", description);
+        if (cover != null) article.put("image", List.of(abs(cover)));
+        if (g.getPublishedAt() != null) article.put("datePublished", g.getPublishedAt().toString());
+        if (updated != null) article.put("dateModified", updated.toString());
+        article.put("author", g.getAuthorName() != null ? Map.of("@type", "Person", "name", g.getAuthorName())
+                : Map.of("@type", "Organization", "name", s.getStoreName(), "url", abs("/" + sf.path())));
+        article.put("publisher", Map.of("@type", "Organization", "name", s.getStoreName(),
+                "logo", Map.of("@type", "ImageObject", "url", abs(LOGO.formatted(sf == Storefront.SHOP ? "elaashop" : "elaatech")))));
+        article.put("mainEntityOfPage", abs(path));
+        p.jsonLd(article);
+        p.jsonLd(breadcrumbLd(sf, s, trail));
+        if (!r.products().isEmpty()) p.jsonLd(itemList(sf, r.products()));
+        return p;
+    }
+
+    private static String guideGrid(List<GuideService.GuideCard> list) {
+        StringBuilder sb = new StringBuilder("<div class=\"guide-grid\">");
+        for (var c : list) {
+            sb.append("<a class=\"guide-card\" href=\"").append(esc(c.url())).append("\"><div class=\"guide-cover\">");
+            if (c.coverUrl() != null) sb.append("<img src=\"").append(esc(c.coverUrl())).append("\" alt=\"\" loading=\"lazy\" decoding=\"async\">");
+            sb.append("</div><div class=\"guide-card-body\"><span class=\"eyebrow\">Buying guide · ").append(c.readMinutes())
+                    .append(" min read</span><h3>").append(esc(c.title())).append("</h3>");
+            if (c.summary() != null) sb.append("<p class=\"muted small\">").append(esc(truncate(c.summary(), 140))).append("</p>");
+            sb.append("</div></a>");
+        }
+        return sb.append("</div>").toString();
+    }
+
+    // ------------------------------------------------------------------ web stories
+
+    /** /{sf}/stories: every published story as a tappable portrait card. */
+    @Transactional
+    public SeoPage storiesIndex(Storefront sf) {
+        StoreSettings s = settings.entity(sf);
+        String path = "/" + sf.path() + "/stories";
+        List<WebStoryService.StoryCard> cards = stories.cards(sf, 50);
+        String description = "Quick, swipeable stories from " + s.getStoreName() + ": hand-picked deals, buying tips and price drops.";
+        StringBuilder body = new StringBuilder("<div class=\"container\">");
+        body.append(breadcrumb(sf, s, List.of(Map.entry("Web Stories", path))));
+        body.append("<div class=\"section-head\"><h1>Web Stories</h1></div><p class=\"muted\">").append(esc(description)).append("</p>");
+        if (cards.isEmpty()) {
+            body.append("<div class=\"card empty\">No stories yet. Check back soon.</div>");
+        } else {
+            body.append("<div class=\"story-grid\">");
+            for (var w : cards) {
+                body.append("<a class=\"story-card\" href=\"").append(esc(w.url())).append("\">");
+                if (w.coverUrl() != null) {
+                    body.append("<img src=\"").append(esc(w.coverUrl())).append("\" alt=\"\" width=\"720\" height=\"960\" loading=\"lazy\" decoding=\"async\">");
+                }
+                body.append("<span class=\"story-title\">").append(esc(w.title())).append("</span></a>");
+            }
+            body.append("</div>");
+        }
+        body.append("</div>");
+        SeoPage p = base(sf, s).title("Web Stories | " + s.getStoreName()).description(description).canonical(abs(path))
+                .noindex(cards.isEmpty()).body(body.toString());
+        if (!cards.isEmpty()) {
+            Map<String, Object> list = new LinkedHashMap<>();
+            list.put("@context", "https://schema.org");
+            list.put("@type", "ItemList");
+            List<Map<String, Object>> items = new ArrayList<>();
+            int i = 1;
+            for (var w : cards) items.add(Map.of("@type", "ListItem", "position", i++, "url", abs(w.url()), "name", w.title()));
+            list.put("itemListElement", items);
+            p.jsonLd(list);
+        }
+        p.jsonLd(breadcrumbLd(sf, s, List.of(Map.entry("Web Stories", path))));
+        return p;
     }
 
     // ------------------------------------------------------------------ 404
@@ -326,6 +613,13 @@ public class SeoPageService {
         if (p.getSummary() != null && p.getSummary().length() >= 50) return truncate(p.getSummary(), 160);
         String text = ((p.getSummary() == null ? "" : p.getSummary() + " ") + (p.getDescription() == null ? "" : p.getDescription())).trim();
         return text.isEmpty() ? p.getTitle() : truncate(text.replaceAll("\\s+", " "), 160);
+    }
+
+    private static void appendList(StringBuilder body, String heading, String cssClass, List<String> items) {
+        if (items == null || items.isEmpty()) return;
+        body.append("<h2>").append(heading).append("</h2><ul class=\"").append(cssClass).append("\">");
+        items.forEach(i -> body.append("<li>").append(esc(i)).append("</li>"));
+        body.append("</ul>");
     }
 
     static String truncate(String text, int max) {

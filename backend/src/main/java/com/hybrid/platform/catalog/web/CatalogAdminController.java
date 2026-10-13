@@ -32,11 +32,15 @@ public class CatalogAdminController {
                                  Long priceMinor, Long compareAtMinor, @Size(max = 80) String sku, Integer weightGrams,
                                  @Size(max = 200) String metaTitle, @Size(max = 320) String metaDescription,
                                  @Size(max = 100) String focusKeyword, Boolean noindex,
-                                 @Size(max = 8) String hsnSac, Integer gstRateBps, Long version) {
+                                 @Size(max = 8) String hsnSac, Integer gstRateBps, Long version,
+                                 @Size(max = 2000) String highlights, @Size(max = 2000) String pros,
+                                 @Size(max = 2000) String cons, @Size(max = 600) String verdict, Integer expertRating,
+                                 @Size(max = 8000) String specs) {
         ProductInput toInput() {
             return new ProductInput(productType, sellingMethod, title, slug, summary, description, brand, categoryId,
                     digitalFormat, deliveryKind, priceMinor, compareAtMinor, sku, weightGrams,
-                    metaTitle, metaDescription, focusKeyword, noindex, hsnSac, gstRateBps);
+                    metaTitle, metaDescription, focusKeyword, noindex, hsnSac, gstRateBps,
+                    highlights, pros, cons, verdict, expertRating, specs);
         }
     }
 
@@ -59,9 +63,11 @@ public class CatalogAdminController {
     }
 
     private final CatalogAdminService service;
+    private final com.hybrid.platform.commerce.settings.SettingsService settings;
 
-    public CatalogAdminController(CatalogAdminService service) {
+    public CatalogAdminController(CatalogAdminService service, com.hybrid.platform.commerce.settings.SettingsService settings) {
         this.service = service;
+        this.settings = settings;
     }
 
     @GetMapping("/products")
@@ -144,6 +150,61 @@ public class CatalogAdminController {
     public CatalogAdminService.AdminProductView deleteImage(@PathVariable String storefront, @PathVariable Long id,
                                                             @PathVariable Long imageId) {
         return service.deleteImage(CurrentUser.admin(Storefront.fromPath(storefront)), id, imageId);
+    }
+
+    @PostMapping("/products/{id}/images/{imageId}/main")
+    @PreAuthorize("hasAuthority('PERM_CATALOG_WRITE')")
+    public CatalogAdminService.AdminProductView makeMainImage(@PathVariable String storefront, @PathVariable Long id,
+                                                              @PathVariable Long imageId) {
+        return service.makeMainImage(CurrentUser.admin(Storefront.fromPath(storefront)), id, imageId);
+    }
+
+    public record DealOfDayRequest(Long productId, java.time.Instant endsAt) {
+    }
+
+    /** Sets (or with no product, clears) the Deal of the Day shown on the home page with a countdown. */
+    @PutMapping("/deal-of-the-day")
+    @PreAuthorize("hasAuthority('PERM_CATALOG_WRITE')")
+    public com.hybrid.platform.commerce.settings.SettingsService.StoreSettingsView dealOfDay(@PathVariable String storefront,
+                                                                                         @RequestBody DealOfDayRequest req) {
+        var admin = CurrentUser.admin(Storefront.fromPath(storefront));
+        if (req.productId() != null) {
+            CatalogAdminService.AdminProductView p = service.get(admin.storefront(), req.productId());
+            if (!"PUBLISHED".equals(p.status())) {
+                throw com.hybrid.platform.common.error.ApiException.rule("PRODUCT_NOT_PUBLISHED", "Publish the product before making it the Deal of the Day");
+            }
+        }
+        return settings.setDealOfDay(admin, req.productId(), req.endsAt());
+    }
+
+    @PostMapping(value = "/products/{id}/videos", consumes = "multipart/form-data")
+    @PreAuthorize("hasAuthority('PERM_CATALOG_WRITE')")
+    public CatalogAdminService.AdminProductView uploadVideo(@PathVariable String storefront, @PathVariable Long id,
+                                                            @RequestParam("file") MultipartFile file,
+                                                            @RequestParam(value = "poster", required = false) MultipartFile poster,
+                                                            @RequestParam(value = "title", required = false) String title,
+                                                            @RequestParam(value = "durationSeconds", required = false) Integer durationSeconds,
+                                                            @RequestParam(value = "width", required = false) Integer width,
+                                                            @RequestParam(value = "height", required = false) Integer height) throws IOException {
+        return service.uploadVideo(CurrentUser.admin(Storefront.fromPath(storefront)), id, file, poster, title,
+                durationSeconds, width, height);
+    }
+
+    public record VideoTitleRequest(@Size(max = 200) String title) {
+    }
+
+    @PatchMapping("/products/{id}/videos/{videoId}")
+    @PreAuthorize("hasAuthority('PERM_CATALOG_WRITE')")
+    public CatalogAdminService.AdminProductView updateVideo(@PathVariable String storefront, @PathVariable Long id,
+                                                            @PathVariable Long videoId, @Valid @RequestBody VideoTitleRequest req) {
+        return service.updateVideoTitle(CurrentUser.admin(Storefront.fromPath(storefront)), id, videoId, req.title());
+    }
+
+    @DeleteMapping("/products/{id}/videos/{videoId}")
+    @PreAuthorize("hasAuthority('PERM_CATALOG_WRITE')")
+    public CatalogAdminService.AdminProductView deleteVideo(@PathVariable String storefront, @PathVariable Long id,
+                                                            @PathVariable Long videoId) {
+        return service.deleteVideo(CurrentUser.admin(Storefront.fromPath(storefront)), id, videoId);
     }
 
     @GetMapping("/categories")

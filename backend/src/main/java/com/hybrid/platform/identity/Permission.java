@@ -13,7 +13,13 @@ public enum Permission {
     AFFILIATE_WRITE,
     SETTINGS_WRITE,
     STAFF_MANAGE,
-    AUDIT_READ;
+    AUDIT_READ,
+    /** See CRM customer profiles, segments and campaign results. */
+    CRM_READ,
+    /** Add notes, tags and follow-up tasks to customers. */
+    CRM_WRITE,
+    /** Send email campaigns and manage automated reminders. */
+    MARKETING_SEND;
 
     public String authority() {
         return "PERM_" + name();

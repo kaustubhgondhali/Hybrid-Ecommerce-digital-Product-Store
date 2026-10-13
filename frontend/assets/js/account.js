@@ -12,7 +12,8 @@
     'account-index': indexPage,
     'account-order': orderPage,
     'account-invoice': invoicePage,
-    'account-library': libraryPage
+    'account-library': libraryPage,
+    'account-unsubscribe': unsubscribePage
   };
 
   document.addEventListener('DOMContentLoaded', async () => {
@@ -83,7 +84,7 @@
         el('a', { href: '/account/register.html' + location.search, text: 'Create an account' }))));
   }
 
-  async function registerPage({ sf }) {
+  async function registerPage({ sf, storeName }) {
     document.title = 'Create account';
     page(el('div', { class: 'card narrow' },
       el('h1', { text: 'Create your account' }),
@@ -91,9 +92,12 @@
         UI.field('Full name', input('fullName', 'text', { autocomplete: 'name', required: true, maxlength: '120' })),
         UI.field('Email', input('email', 'email', { autocomplete: 'email', required: true })),
         UI.field('Password', input('password', 'password', { autocomplete: 'new-password', required: true }),
-          'At least 8 characters, including a letter and a number.')
+          'At least 8 characters, including a letter and a number.'),
+        el('label', { class: 'check field' }, input('marketingOptIn', 'checkbox'),
+          'Email me deals, price drops and offers from ' + (storeName || Site.STOREFRONTS[sf]) + '. Unsubscribe any time.')
       ], 'Create account', async (v) => {
-        await Api.post('/api/auth/register', { fullName: v.fullName, email: v.email, password: v.password, storefront: sf });
+        await Api.post('/api/auth/register', { fullName: v.fullName, email: v.email, password: v.password, storefront: sf,
+          marketingOptIn: v.marketingOptIn === true });
         location.href = nextUrl();
       }),
       el('p', { class: 'mt small' }, 'Already have an account? ', el('a', { href: '/account/login.html' + location.search, text: 'Sign in' }))));
@@ -188,7 +192,55 @@
 
     page(el('div', { class: 'actions mb' }, el('h1', { text: 'My account' }), el('span', { class: 'spacer' }),
       el('a', { class: 'btn secondary', href: '/account/library.html', text: 'My digital library' }), logout),
-    el('div', { class: 'split' }, ordersCard, el('div', null, profile, password)));
+    el('div', { class: 'split' }, ordersCard, el('div', null, profile, await emailPreferences(), password)));
+  }
+
+  /** Marketing email opt-in per store. Order and account emails are always sent. */
+  async function emailPreferences() {
+    const prefs = await Api.get('/api/marketing/preferences').catch(() => null);
+    if (!prefs) return null;
+    const boxes = Object.keys(Site.STOREFRONTS).map((key) => {
+      const box = el('input', { type: 'checkbox', checked: !!prefs[key] });
+      box.addEventListener('change', async () => {
+        try {
+          await Api.put('/api/marketing/preferences', { [key]: box.checked });
+          UI.toast(box.checked ? 'Subscribed to ' + Site.STOREFRONTS[key] + ' offers' : 'Unsubscribed from ' + Site.STOREFRONTS[key] + ' offers', 'success');
+        } catch (e) { box.checked = !box.checked; UI.toast(UI.errorMessage(e), 'error'); }
+      });
+      return el('label', { class: 'check mb' }, box, 'Deals and offers from ' + Site.STOREFRONTS[key]);
+    });
+    return el('div', { class: 'card' }, el('h2', { text: 'Email preferences' }), boxes,
+      el('p', { class: 'muted small', text: 'Order, delivery and account emails are always sent.' }));
+  }
+
+  // ------------------------------------------------------------------ unsubscribe (link in marketing emails)
+
+  async function unsubscribePage() {
+    document.title = 'Unsubscribe';
+    const c = UI.param('c');
+    const s = UI.param('sf');
+    const t = UI.param('t');
+    const store = Site.STOREFRONTS[s] || 'this store';
+    if (!c || !s || !t) {
+      page(el('div', { class: 'card narrow' }, el('h1', { text: 'Unsubscribe' }),
+        el('div', { class: 'alert error', text: 'This unsubscribe link is incomplete. Sign in to change your email preferences.' }),
+        el('a', { class: 'btn', href: '/account', text: 'My account' })));
+      return;
+    }
+    const msg = el('div');
+    const button = el('button', { class: 'btn block', type: 'button', text: 'Unsubscribe' });
+    button.addEventListener('click', () => UI.busy(button, async () => {
+      try {
+        await Api.post('/api/marketing/unsubscribe', { c: Number(c), s, t });
+        mount(card, el('h1', { text: 'You are unsubscribed' }),
+          el('p', { text: 'You will no longer get offers from ' + store + ' by email. Order and account emails still arrive as usual.' }),
+          el('p', { class: 'muted small', text: 'Changed your mind? You can subscribe again in your account.' }),
+          el('a', { class: 'btn secondary', href: '/' + s, text: 'Back to ' + store }));
+      } catch (e) { mount(msg, UI.errorAlert(e)); }
+    }));
+    const card = el('div', { class: 'card narrow' }, el('h1', { text: 'Unsubscribe' }),
+      el('p', { text: 'Stop receiving deals and offers from ' + store + ' by email?' }), msg, button);
+    page(card);
   }
 
   function resendButton(sf) {

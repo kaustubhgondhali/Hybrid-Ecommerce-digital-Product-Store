@@ -59,6 +59,28 @@
     return data;
   }
 
+  /** POSTs a FormData and reports upload progress (0 to 1); used for large files such as videos. */
+  async function uploadWithProgress(url, formData, onProgress) {
+    await ensureCsrfCookie();
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.setRequestHeader('Accept', 'application/json');
+      const token = cookie('XSRF-TOKEN');
+      if (token) xhr.setRequestHeader('X-XSRF-TOKEN', token);
+      if (onProgress) xhr.upload.addEventListener('progress', (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); });
+      xhr.addEventListener('load', () => {
+        let data = null;
+        try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch (e) { data = null; }
+        if (xhr.status >= 200 && xhr.status < 300) { resolve(data); return; }
+        reject(new ApiError(xhr.status, (data && data.code) || 'HTTP_' + xhr.status,
+          (data && (data.detail || data.title)) || 'Upload failed', data));
+      });
+      xhr.addEventListener('error', () => reject(new ApiError(0, 'NETWORK', 'The upload was interrupted. Check your connection and try again.')));
+      xhr.send(formData);
+    });
+  }
+
   window.ApiError = ApiError;
   window.Api = {
     get: (url) => request('GET', url),
@@ -66,6 +88,7 @@
     put: (url, body) => request('PUT', url, body),
     patch: (url, body) => request('PATCH', url, body),
     del: (url) => request('DELETE', url),
-    upload: (url, formData) => request('POST', url, formData)
+    upload: (url, formData) => request('POST', url, formData),
+    uploadWithProgress
   };
 })();
