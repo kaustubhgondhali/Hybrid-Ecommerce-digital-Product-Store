@@ -124,7 +124,7 @@ public class ReviewService {
     public MyReview submit(CustomerPrincipal customer, Storefront sf, String slug, ReviewInput in) {
         Product p = published(sf, slug);
         boolean verified = orders.hasPurchased(customer.id(), p.getId(), PURCHASED);
-        if (p.getSellingMethod() == SellingMethod.DIRECT && !verified) {
+        if (p.isOnSite() && !verified) {
             throw ApiException.forbidden("REVIEW_NOT_ALLOWED", "Only customers who bought this product can review it");
         }
         if (in.rating() == null || in.rating() < 1 || in.rating() > 5) {
@@ -138,7 +138,7 @@ public class ReviewService {
         r.setRating(in.rating());
         r.setTitle(title);
         r.setBody(body);
-        r.setVerifiedPurchase(verified && p.getSellingMethod() == SellingMethod.DIRECT);
+        r.setVerifiedPurchase(verified && p.isOnSite());
         r.setStatus(settings.entity(sf).isReviewsAutoApprove() ? ProductReview.Status.APPROVED : ProductReview.Status.PENDING);
         reviews.save(r);
         return new MyReview(r.getRating(), r.getTitle(), r.getBody(), r.getStatus().name());

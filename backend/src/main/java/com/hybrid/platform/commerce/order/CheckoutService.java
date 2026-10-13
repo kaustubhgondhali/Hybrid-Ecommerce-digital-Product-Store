@@ -117,7 +117,7 @@ public class CheckoutService {
 
     @Transactional
     public Quote quote(CustomerPrincipal customer, Storefront sf, QuoteRequest req) {
-        rejectIfAffiliateOnly();
+        rejectIfAffiliateOnly(sf);
         QuoteRequest r = req == null ? new QuoteRequest(null, null, null, null, null) : req;
         Priced priced = price(customer.id(), sf);
         StoreSettings s = settings.entity(sf);
@@ -146,7 +146,7 @@ public class CheckoutService {
     /** Lets the cart/checkout page validate a coupon before placing the order. */
     @Transactional(readOnly = true)
     public CouponService.Applied checkCoupon(CustomerPrincipal customer, Storefront sf, String code) {
-        rejectIfAffiliateOnly();
+        rejectIfAffiliateOnly(sf);
         Priced priced = price(customer.id(), sf);
         if (priced.lines().isEmpty()) throw ApiException.rule("CART_EMPTY", "Your cart is empty");
         return coupons.evaluate(sf, customer.id(), code, priced.subtotal());
@@ -154,7 +154,7 @@ public class CheckoutService {
 
     @Transactional
     public PlacedOrder place(CustomerPrincipal principal, Storefront sf, CheckoutRequest request, String idempotencyKey) {
-        rejectIfAffiliateOnly();
+        rejectIfAffiliateOnly(sf);
         if (idempotencyKey == null || !IDEMPOTENCY_KEY.matcher(idempotencyKey).matches()) {
             throw ApiException.badRequest("IDEMPOTENCY_KEY_REQUIRED", "A valid Idempotency-Key header is required");
         }
@@ -218,11 +218,10 @@ public class CheckoutService {
         CustomerOrder order = new CustomerOrder(newOrderNumber(sf), sf, customer.getId(), customer.getEmail(),
                 customer.getFullName(), props.currency(), idempotencyKey,
                 cod ? null : Instant.now().plus(Duration.ofMinutes(props.checkout().reservationMinutes())));
-        List<Map.Entry<Long, Integer>> entries = new ArrayList<>(priced.quantities().entrySet());
-        for (Map.Entry<Long, Integer> e : entries) {
-            SellableVariant v = priced.variants().get(e.getKey());
-            order.addLine(new OrderLine(v.productId(), v.variantId(), v.productType(), v.sku(), v.title(), v.variantName(),
-                    v.priceMinor(), e.getValue()));
+        for (QuoteLine q : priced.lines()) {
+            SellableVariant v = priced.variants().get(q.variantId());
+            order.addLine(new OrderLine(v.productId(), v.variantId(), v.productType(), v.sellingMethod(), v.sku(), v.title(),
+                    v.variantName(), v.priceMinor(), q.quantity()));
         }
         orders.saveAndFlush(order);
 
@@ -245,11 +244,11 @@ public class CheckoutService {
         order.setShippingAddress(address);
         order.setPaymentMethod(cod ? CustomerOrder.PaymentMethod.COD : CustomerOrder.PaymentMethod.ONLINE);
 
-        for (OrderLine line : order.physicalLines()) {
+        for (OrderLine line : order.stockLines()) {
             inventory.reserve(order.getId(), line.getVariantId(), line.getQuantity(), line.getTitle());
         }
         catalog.lockTypes(order.getLines().stream().map(OrderLine::getProductId).distinct().toList());
-        carts.clear(customer.getId(), sf);
+        carts.removeVariants(customer.getId(), sf, order.getLines().stream().map(OrderLine::getVariantId).toList());
 
         if (cod) {
             inventory.commitForOrder(order.getId());
@@ -332,10 +331,9 @@ public class CheckoutService {
         return null;
     }
 
-    private void rejectIfAffiliateOnly() {
-        if (props.affiliateOnly()) {
-            throw ApiException.rule("AFFILIATE_ONLY",
-                    "This store is affiliate-only. Products are bought on partner sites — checkout is disabled here.");
+    private void rejectIfAffiliateOnly(Storefront sf) {
+        if (settings.affiliateOnly(sf)) {
+            throw ApiException.rule("AFFILIATE_ONLY", "Checkout is not available in this store.");
         }
     }
 
@@ -362,7 +360,7 @@ public class CheckoutService {
             }
             if (v.productType() == ProductType.PHYSICAL) {
                 shipping = true;
-                int available = stock.getOrDefault(v.variantId(), 0);
+                int available = v.ownStock() ? stock.getOrDefault(v.variantId(), 0) : Integer.MAX_VALUE;
                 if (available < qty) {
                     problems.add(available <= 0 ? "'" + v.title() + "' is out of stock."
                             : "Only " + available + " of '" + v.title() + "' left in stock.");

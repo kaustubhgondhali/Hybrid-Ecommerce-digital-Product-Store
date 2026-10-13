@@ -142,7 +142,7 @@ public class SeoAdminService {
         boolean dupTitle = othersWith(ctx.titleCounts, key(effectiveTitle), key(ctx.effectiveTitle(p))) > 0;
         boolean dupDesc = othersWith(ctx.descCounts, key(descForDup), key(ctx.effectiveDescription(p))) > 0;
 
-        boolean hasPrice = p.getSellingMethod() == SellingMethod.DIRECT
+        boolean hasPrice = p.isOnSite()
                 ? p.activeVariants().stream().map(ProductVariant::getPriceMinor).anyMatch(Objects::nonNull)
                 : ctx.affiliatePrices.contains(p.getId());
         int missingAlt = (int) p.getImages().stream().map(ProductImage::getAltText).filter(a -> a == null || a.isBlank()).count();

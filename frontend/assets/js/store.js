@@ -74,6 +74,11 @@
     return !(window.HPP_STORE && window.HPP_STORE.affiliateOnly === false);
   }
 
+  /** With checkout on, partner offers look like every other product: no store names, price-check notes or store counts. */
+  function plainStore() {
+    return !affiliateOnly();
+  }
+
   function demoBadge(p) {
     return isDemoProduct(p) ? el('span', { class: 'badge amber', text: 'Demo' }) : null;
   }
@@ -97,6 +102,7 @@
     if (p.priceMinor != null) {
       return el('div', { class: 'price' }, money(p.priceMinor), p.compareAtMinor ? el('s', { text: money(p.compareAtMinor) }) : null);
     }
+    if (p.checkPrice && plainStore()) return el('div', { class: 'check-price', text: 'See the latest price' });
     return p.checkPrice && p.merchantName ? el('div', { class: 'check-price', text: 'Check price on ' + p.merchantName }) : null;
   }
 
@@ -138,11 +144,10 @@
     const filterForm = el('form', { class: 'filters', id: 'catalog', method: 'get', action: '/' + sf },
       params.get('q') ? el('input', { type: 'hidden', name: 'q', value: params.get('q') }) : null,
       select('category', [['', 'All categories'], ...categories.map((c) => [c.slug, c.name])], params.get('category')),
-      stores.length > 1 ? select('store', [['', 'All stores'], ...stores.map((st) => [st.domain, st.name])], params.get('store')) : null,
+      stores.length > 1 && !plainStore() ? select('store', [['', 'All stores'], ...stores.map((st) => [st.domain, st.name])], params.get('store')) : null,
       select('minDiscount', [['', 'Any discount'], ['10', '10% off or more'], ['20', '20% off or more'], ['30', '30% off or more'], ['50', '50% off or more']], params.get('minDiscount')),
       select('price', [['', 'Any price'], ['-500', 'Under \u20B9500'], ['500-1000', '\u20B9500 \u2013 \u20B91,000'], ['1000-5000', '\u20B91,000 \u2013 \u20B95,000'],
         ['5000-20000', '\u20B95,000 \u2013 \u20B920,000'], ['20000-', 'Over \u20B920,000']], params.get('price')),
-      affiliateOnly() ? null : select('method', [['', 'All offers'], ['DIRECT', 'Sold by us'], ['AFFILIATE', 'Partner offers']], params.get('method')),
       select('sort', [['', 'Newest first'], ['popular', 'Most popular'], ['price_asc', 'Price: low to high'], ['price_desc', 'Price: high to low'],
         ['discount', 'Biggest discount'], ['rating', 'Top rated'], ['title', 'Name (A\u2013Z)']], params.get('sort')));
     const go = () => {
@@ -169,7 +174,8 @@
 
     if (filtered) {
       // Category and search results: a large page title, category pills to jump around, then the grid.
-      const count = result.totalItems === 1 ? '1 deal' : result.totalItems + (affiliateOnly() ? ' deals' : ' products');
+      const count = affiliateOnly() ? (result.totalItems === 1 ? '1 deal' : result.totalItems + ' deals')
+        : (result.totalItems === 1 ? '1 product' : result.totalItems + ' products');
       if (categories.length) filterForm.classList.add('has-pills');
       mount(main(), el('div', { class: 'container' },
         el('header', { class: 'page-title' }, el('h1', { text: heading }), el('p', { class: 'muted', text: count })),
@@ -225,12 +231,12 @@
     if (picks.length < 2) return null;
     const slides = picks.map((p) => el('a', { class: 'showcase-slide', href: '/' + sf + '/p/' + encodeURIComponent(p.slug) },
       el('div', { class: 'showcase-body' },
-        el('div', { class: 'card-meta' }, demoBadge(p), p.merchantName ? el('span', { class: 'merchant', text: p.merchantName }) : null, dealFlag(p, true)),
+        el('div', { class: 'card-meta' }, demoBadge(p), p.merchantName && !plainStore() ? el('span', { class: 'merchant', text: p.merchantName }) : null, dealFlag(p, true)),
         el('h3', { class: 'showcase-title', text: p.title }),
         p.summary ? el('p', { text: p.summary }) : null,
         priceLine(p),
-        p.priceCheckedAt ? el('div', { class: 'fresh', text: checkedText(p.priceCheckedAt) }) : null,
-        el('div', { class: 'cta-row' }, el('span', { class: 'btn small', text: p.sellingMethod === 'AFFILIATE' ? 'See the deal' : 'View product' }),
+        p.priceCheckedAt && !plainStore() ? el('div', { class: 'fresh', text: checkedText(p.priceCheckedAt) }) : null,
+        el('div', { class: 'cta-row' }, el('span', { class: 'btn small', text: p.sellingMethod === 'AFFILIATE' && !plainStore() ? 'See the deal' : 'View product' }),
           el('span', { class: 'link-more', text: 'Learn more' }))),
       el('div', { class: 'showcase-media' }, el('img', { src: p.imageUrl, alt: '', decoding: 'async' }),
         p.discountPercent ? el('span', { class: 'deal-badge', text: '-' + p.discountPercent + '%' }) : null)));
@@ -265,7 +271,8 @@
       el('div', { class: 'category-tiles' }, tiles.map((t) => el('a', { class: 'category-tile', href: '/' + sf + '/c/' + encodeURIComponent(t.slug) },
         t.imageUrl ? el('img', { src: t.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : el('span', { class: 'tile-ph', text: t.name.charAt(0) }),
         el('span', { class: 'tile-name', text: t.name }),
-        el('span', { class: 'tile-count', text: t.products + (t.products === 1 ? ' deal' : ' deals') })))));
+        el('span', { class: 'tile-count', text: t.products + (plainStore() ? (t.products === 1 ? ' product' : ' products')
+          : (t.products === 1 ? ' deal' : ' deals')) })))));
   }
 
   function pageHref(params, page) {
@@ -286,7 +293,8 @@
    */
   function productCard(sf, p) {
     const href = '/' + sf + '/p/' + encodeURIComponent(p.slug);
-    const partner = p.sellingMethod === 'AFFILIATE';
+    const plain = plainStore();
+    const partner = p.sellingMethod === 'AFFILIATE' && !plain;
     return el('div', { class: 'product-card' },
       el('a', { class: 'thumb', href, tabindex: '-1', 'aria-hidden': 'true' },
         p.imageUrl ? el('img', { src: p.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : el('span', { text: 'No image' }),
@@ -296,13 +304,13 @@
       el('div', { class: 'body' },
         el('div', { class: 'card-meta' }, demoBadge(p),
           partner && p.merchantName ? el('span', { class: 'merchant', text: p.merchantName }) : null,
-          p.offerCount > 1 ? el('span', { class: 'muted', text: p.offerCount + ' stores' }) : null),
+          partner && p.offerCount > 1 ? el('span', { class: 'muted', text: p.offerCount + ' stores' }) : null),
         el('a', { class: 'title', href, text: p.title }),
         p.expertRating ? expertRating(p.expertRating) : null,
         el('div', { class: 'spacer' }),
         priceLine(p),
-        p.priceCheckedAt ? el('div', { class: 'fresh', text: checkedText(p.priceCheckedAt) }) : null,
-        !partner && p.inStock === false ? el('div', { class: 'small', text: 'Out of stock' }) : null,
+        partner && p.priceCheckedAt ? el('div', { class: 'fresh', text: checkedText(p.priceCheckedAt) }) : null,
+        p.inStock === false ? el('div', { class: 'small', text: 'Out of stock' }) : null,
         partner && p.goUrl
           ? el('a', { class: 'btn block', href: p.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
             title: 'Buy on ' + (p.merchantName || 'partner store'),
@@ -412,7 +420,7 @@
         p.images.length ? el('img', { src: p.images[0].thumbUrl || p.images[0].url, alt: '' }) : null,
         el('span', { text: p.title })),
       p.affiliate ? el('a', { class: 'btn small', href: p.affiliate.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
-        text: 'Buy on ' + p.affiliate.merchantName }) : null,
+        text: plainStore() ? 'Buy now' : 'Buy on ' + p.affiliate.merchantName }) : null,
       shared.length ? null : remove(p))));
     const shareUrl = location.origin + '/' + sf + '/compare?p=' + products.map((p) => encodeURIComponent(p.slug)).join(',');
     const copy = el('button', { type: 'button', class: 'btn secondary small', text: 'Copy link to this comparison' });
@@ -426,7 +434,8 @@
           row('Price', (p) => p.affiliate
             ? (p.affiliate.displayPriceMinor != null ? el('strong', { text: money(p.affiliate.displayPriceMinor) }) : el('span', { class: 'muted', text: 'Check price' }))
             : p.variants.length && p.variants[0].priceMinor != null ? el('strong', { text: money(p.variants[0].priceMinor) }) : '—'),
-          row('Best store', (p) => p.affiliate ? p.affiliate.merchantName + (p.offers.length > 1 ? ' (' + p.offers.length + ' stores)' : '') : 'Sold here'),
+          plainStore() ? null
+            : row('Best store', (p) => p.affiliate ? p.affiliate.merchantName + (p.offers.length > 1 ? ' (' + p.offers.length + ' stores)' : '') : 'Sold here'),
           row('Our rating', (p) => p.expertRating ? expertRating(p.expertRating) : el('span', { class: 'muted', text: '—' })),
           row('Highlights', (p) => list(p.highlights)),
           specNames.map((name) => row(name, (p) => {
@@ -571,7 +580,7 @@
         el('p', { class: 'small muted', text: 'Ends in' }), clock,
         el('div', { class: 'cta-row' },
           p.goUrl ? el('a', { class: 'btn', href: p.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
-            text: p.merchantName && p.merchantName.length <= 16 ? 'Buy on ' + p.merchantName : 'Get the deal' }) : null,
+            text: plainStore() ? 'Buy now' : p.merchantName && p.merchantName.length <= 16 ? 'Buy on ' + p.merchantName : 'Get the deal' }) : null,
           el('a', { class: 'link-more', href: '/' + sf + '/p/' + encodeURIComponent(p.slug), text: 'Learn more' }))));
     const tick = () => {
       let left = Math.max(0, Math.floor((end - Date.now()) / 1000));
@@ -768,7 +777,7 @@
       store: p.affiliate ? p.affiliate.merchantName : undefined,
       price: p.affiliate && p.affiliate.displayPriceMinor != null ? p.affiliate.displayPriceMinor / 100 : undefined });
     const offersHolder = el('div');
-    if (p.sellingMethod === 'AFFILIATE') {
+    if (p.sellingMethod === 'AFFILIATE' && !plainStore()) {
       Api.get('/api/' + sf + '/catalog/offers?product=' + p.id).then((list) => {
         const block = offersSection(list, 'Coupons for this deal.', 'Use them at checkout on the store\u2019s site.');
         if (block) { mount(offersHolder, block); Site.reveal(offersHolder); }
@@ -823,7 +832,11 @@
     if (p.sellingMethod === 'AFFILIATE') {
       const offer = p.affiliate;
       const variant = (p.variants && p.variants[0]) || null;
-      if (offer) {
+      if (offer && plainStore()) {
+        mainCta = partnerBuyBox(sf, p, offer, variant, user, info);
+        sticky = stickyBuy(p, offer.displayPriceMinor != null ? money(offer.displayPriceMinor) : null,
+          el('a', { class: 'btn', href: offer.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer', text: 'Buy now' }));
+      } else if (offer) {
         const shown = offer.displayPriceMinor != null;
         const addBtn = el('button', { class: 'btn ghost small', type: 'button', text: 'Add to cart' });
         const msg = el('div');
@@ -867,7 +880,7 @@
               el('span', { class: 'muted small', text: 'at ' + offer.merchantName })),
             el('a', { class: 'btn', href: offer.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer', text: 'Buy now' })));
       } else {
-        info.appendChild(el('div', { class: 'alert warning', text: 'This partner offer is currently unavailable.' }));
+        info.appendChild(el('div', { class: 'alert warning', text: plainStore() ? 'Currently unavailable.' : 'This partner offer is currently unavailable.' }));
       }
     } else {
       const active = p.variants;
@@ -875,13 +888,24 @@
       const priceEl = el('p', { class: 'price big' });
       const stockEl = el('p', { class: 'small' });
       const qty = el('input', { type: 'number', min: '1', max: '20', value: '1', class: 'qty', 'aria-label': 'Quantity' });
-      const addBtn = el('button', { class: 'btn', type: 'button', text: 'Add to cart' });
+      const addBtn = el('button', { class: 'btn secondary', type: 'button', text: 'Add to cart' });
+      const buyBtn = el('button', { class: 'btn', type: 'button', text: 'Buy now' });
       const msg = el('div');
       const renderSelected = () => {
         mount(priceEl, money(selected.priceMinor), selected.compareAtMinor ? el('s', { text: money(selected.compareAtMinor) }) : null);
         mount(stockEl, selected.available ? (p.productType === 'DIGITAL' ? 'Instant delivery after payment' : 'In stock') : 'Currently unavailable');
         addBtn.disabled = !selected.available;
+        buyBtn.disabled = !selected.available;
       };
+      buyBtn.addEventListener('click', () => UI.busy(buyBtn, async () => {
+        if (!user) { location.href = Site.loginUrl(); return; }
+        try {
+          await Api.post('/api/' + sf + '/cart/items', { variantId: selected.id, quantity: parseInt(qty.value, 10) || 1 });
+          location.href = '/' + sf + '/checkout';
+        } catch (e) {
+          mount(msg, UI.errorAlert(e));
+        }
+      }));
       const variantPicker = active.length > 1 ? UI.field('Option', el('select', {
         on: { change: (e) => { selected = active.find((v) => String(v.id) === e.target.value); renderSelected(); } }
       }, active.map((v) => el('option', { value: String(v.id), text: v.name + (v.available ? '' : ' (unavailable)'), selected: v === selected })))) : null;
@@ -897,7 +921,7 @@
       }));
       renderSelected();
       UI.append(info, [priceEl, stockEl, variantPicker,
-        el('div', { class: 'actions mb' }, qty, addBtn), msg,
+        el('div', { class: 'actions mb' }, qty, buyBtn, addBtn), msg,
         p.summary ? el('p', { class: 'lead-text', text: p.summary }) : null,
         wishlistButton(sf, p.slug, user),
         p.productType === 'PHYSICAL' ? pincodeChecker(sf) : null,
@@ -940,6 +964,48 @@
       }
     }
     renderReviews(sf, p, user, reviewsBox, ratingLine, 0);
+  }
+
+  /**
+   * Partner product shown like any other product: price, Buy now (opens the partner checkout) and Add to cart.
+   * The disclosure stays because affiliate programmes and consumer rules require it.
+   */
+  function partnerBuyBox(sf, p, offer, variant, user, info) {
+    const addBtn = el('button', { class: 'btn secondary', type: 'button', text: 'Add to cart' });
+    const msg = el('div');
+    addBtn.disabled = !variant || !variant.available;
+    addBtn.addEventListener('click', () => UI.busy(addBtn, async () => {
+      if (!user) { location.href = Site.loginUrl(); return; }
+      try {
+        await Api.post('/api/' + sf + '/cart/items', { variantId: variant.id, quantity: 1 });
+        mount(msg, el('div', { class: 'alert success' }, 'Added to cart. ', el('a', { href: '/' + sf + '/cart', text: 'View cart' })));
+      } catch (e) {
+        mount(msg, UI.errorAlert(e));
+      }
+    }));
+    const buy = el('a', { class: 'btn buy-cta', href: offer.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer', text: 'Buy now' });
+    UI.append(info, [
+      offer.displayPriceMinor != null
+        ? el('p', { class: 'price big' }, money(offer.displayPriceMinor),
+          offer.discountPercent ? el('s', { text: money(offer.listPriceMinor) }) : null)
+        : el('p', { class: 'check-price big', text: 'See the latest price' }),
+      el('p', { class: 'small', text: 'In stock' }),
+      socialProof(p),
+      el('div', { class: 'actions mb' }, buy, addBtn), msg,
+      offer.disclosure ? el('p', { class: 'disclosure-line', text: offer.disclosure }) : null,
+      p.summary ? el('p', { class: 'lead-text', text: p.summary }) : null,
+      el('div', { class: 'actions secondary-actions' }, wishlistButton(sf, p.slug, user), compareToggle(sf, p, 'ghost-compare')),
+      isDemoProduct(p) ? el('p', { class: 'note small', text: 'This is a sample listing. Buy now opens a demo partner page — delete it in the admin panel when you add real products.' }) : null
+    ]);
+    return buy;
+  }
+
+  function stickyBuy(p, priceText, button) {
+    return el('div', { class: 'sticky-buy', role: 'region', 'aria-label': 'Buy this product' },
+      el('div', { class: 'sticky-inner' },
+        el('div', { class: 'sticky-title', text: p.title }),
+        el('div', { class: 'sticky-price' }, el('strong', { text: priceText || 'See price' })),
+        button));
   }
 
   function priceFlags(s) {
@@ -1119,6 +1185,7 @@
 
   function renderCart(sf, cart) {
     const affiliateMode = affiliateOnly() || cart.affiliateOnly;
+    const plain = !affiliateMode;
     const title = affiliateMode && !cart.hasDirectItems ? 'Saved deals' : 'Your cart';
     if (!cart.items.length) {
       mount(main(), el('div', { class: 'container' }, el('h1', { text: title }),
@@ -1144,17 +1211,17 @@
       });
       const buyPartner = affiliate && item.goUrl
         ? el('a', { class: 'btn small', href: item.goUrl, target: '_blank', rel: 'sponsored noopener noreferrer',
-            text: item.merchantName ? 'Buy from ' + item.merchantName : 'Buy from partner' })
+            text: plain ? 'Buy now' : item.merchantName ? 'Buy from ' + item.merchantName : 'Buy from partner' })
         : null;
       return el('div', { class: 'cart-line' },
         el('div', { class: 'thumb' }, item.imageUrl ? el('img', { src: item.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : null),
         el('div', null,
           item.slug ? el('a', { href: '/' + sf + '/p/' + encodeURIComponent(item.slug), text: item.title }) : el('strong', { text: item.title }),
           item.variantName && item.variantName !== 'Default' ? el('div', { class: 'muted small', text: item.variantName }) : null,
-          affiliate
+          affiliate && !plain
             ? el('div', { class: 'muted small', text: item.merchantName ? 'Partner deal · ' + item.merchantName : 'Partner deal · buy on merchant site' })
             : null,
-          el('div', { class: 'small', text: item.unitPriceMinor != null ? money(item.unitPriceMinor) + (affiliate ? ' at partner' : ' each') : '' }),
+          el('div', { class: 'small', text: item.unitPriceMinor != null ? money(item.unitPriceMinor) + (affiliate && !plain ? ' at partner' : ' each') : '' }),
           item.problem ? el('div', { class: 'small', text: '\u26A0 ' + item.problem }) : null),
         el('div', { class: 'right' },
           el('div', { class: 'price', text: money(item.lineTotalMinor) }),
@@ -1162,18 +1229,27 @@
     });
     const side = [];
     if (cart.hasDirectItems) {
+      const checkoutProblems = cart.items.some((i) => i.problem && i.sellingMethod !== 'AFFILIATE');
       side.push(el('div', { class: 'summary-row' },
-        el('span', { text: 'Direct items' }), el('span', { text: money(cart.subtotalMinor) })));
-      side.push(el('p', { class: 'muted small', text: cart.requiresShipping
-        ? 'Shipping and tax are calculated at checkout for items we sell directly.'
-        : 'Tax is calculated at checkout for items we sell directly.' }));
-      if (cart.hasProblems) {
+        el('span', { text: plain ? 'Subtotal' : 'Direct items' }),
+        el('span', { text: money(cart.checkoutSubtotalMinor != null ? cart.checkoutSubtotalMinor : cart.subtotalMinor) })));
+      side.push(el('p', { class: 'muted small', text: plain
+        ? (cart.requiresShipping ? 'Shipping and tax are calculated at checkout.' : 'Tax is calculated at checkout.')
+        : cart.requiresShipping
+          ? 'Shipping and tax are calculated at checkout for items we sell directly.'
+          : 'Tax is calculated at checkout for items we sell directly.' }));
+      if (checkoutProblems) {
         side.push(el('div', { class: 'alert warning', text: 'Please fix the highlighted items before checking out.' }));
       } else {
         side.push(el('a', { class: 'btn block', href: '/' + sf + '/checkout', text: 'Proceed to checkout' }));
       }
+      if (plain && cart.hasAffiliateItems) {
+        side.push(el('p', { class: 'muted small', text: 'Items with their own Buy now button are ordered separately.' }));
+      }
+    } else if (plain && cart.hasAffiliateItems) {
+      side.push(el('p', { class: 'muted small', text: 'Use Buy now on each item to order it.' }));
     }
-    if (cart.hasAffiliateItems) {
+    if (cart.hasAffiliateItems && !plain) {
       side.push(el('p', { class: 'muted small',
         text: cart.hasDirectItems
           ? 'Partner deals stay in your cart as a list. Use Buy from partner on each line — those are not checked out here.'

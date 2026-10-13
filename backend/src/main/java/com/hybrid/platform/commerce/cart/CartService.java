@@ -9,6 +9,7 @@ import com.hybrid.platform.common.AppProperties;
 import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.common.error.ApiException;
 import com.hybrid.platform.commerce.inventory.InventoryService;
+import com.hybrid.platform.commerce.settings.SettingsService;
 import com.hybrid.platform.security.CustomerPrincipal;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,23 +33,29 @@ public class CartService {
                            long lineTotalMinor, Integer available, String merchantName, String goUrl, String problem) {
     }
 
+    /**
+     * {@code hasDirectItems} means items paid for here (own stock or dropship) and {@code checkoutSubtotalMinor} is their
+     * total; partner (affiliate) items are bought on the partner's site and never go through checkout.
+     */
     public record CartView(String storefront, List<CartLine> items, long subtotalMinor, int itemCount,
                            boolean requiresShipping, boolean hasProblems, boolean affiliateOnly,
-                           boolean hasDirectItems, boolean hasAffiliateItems) {
+                           boolean hasDirectItems, boolean hasAffiliateItems, long checkoutSubtotalMinor) {
     }
 
     private final CartRepository carts;
     private final CatalogQueryService catalog;
     private final InventoryService inventory;
     private final AffiliateService affiliate;
+    private final SettingsService settings;
     private final AppProperties props;
 
     public CartService(CartRepository carts, CatalogQueryService catalog, InventoryService inventory,
-                       AffiliateService affiliate, AppProperties props) {
+                       AffiliateService affiliate, SettingsService settings, AppProperties props) {
         this.carts = carts;
         this.catalog = catalog;
         this.inventory = inventory;
         this.affiliate = affiliate;
+        this.settings = settings;
         this.props = props;
     }
 
@@ -56,7 +63,8 @@ public class CartService {
     public CartView view(CustomerPrincipal customer, Storefront sf) {
         return carts.findByCustomerIdAndStorefront(customer.id(), sf)
                 .map(this::toView)
-                .orElseGet(() -> new CartView(sf.path(), List.of(), 0, 0, false, false, props.affiliateOnly(), false, false));
+                .orElseGet(() -> new CartView(sf.path(), List.of(), 0, 0, false, false, settings.affiliateOnly(sf),
+                        false, false, 0));
     }
 
     @Transactional
@@ -72,8 +80,8 @@ public class CartService {
         if (!v.cartableIn(sf)) {
             throw ApiException.rule("NOT_AVAILABLE", "This product is not available");
         }
-        if (props.affiliateOnly() && v.sellingMethod() != SellingMethod.AFFILIATE) {
-            throw ApiException.rule("AFFILIATE_ONLY", "Only partner offers can be added while the store is affiliate-only");
+        if (v.sellingMethod().onSite() && settings.affiliateOnly(sf)) {
+            throw ApiException.rule("AFFILIATE_ONLY", "This product is not available for purchase");
         }
         if (v.sellingMethod() == SellingMethod.AFFILIATE) {
             var offer = affiliate.offers(List.of(v.productId())).get(v.productId());
@@ -131,6 +139,15 @@ public class CartService {
         carts.findByCustomerIdAndStorefront(customerId, sf).ifPresent(Cart::clear);
     }
 
+    /** Removes the checked-out items; partner offers stay in the cart for the shopper to buy on the partner site. */
+    @Transactional
+    public void removeVariants(Long customerId, Storefront sf, java.util.Collection<Long> variantIds) {
+        carts.findByCustomerIdAndStorefront(customerId, sf).ifPresent(cart -> {
+            List<CartItem> gone = cart.getItems().stream().filter(i -> variantIds.contains(i.getVariantId())).toList();
+            gone.forEach(cart::removeItem);
+        });
+    }
+
     /** Raw lines for checkout: variant id and quantity only. */
     @Transactional(readOnly = true)
     public Map<Long, Integer> lines(Long customerId, Storefront sf) {
@@ -153,7 +170,7 @@ public class CartService {
     }
 
     private void checkStock(SellableVariant v, int quantity) {
-        if (v.sellingMethod() == SellingMethod.AFFILIATE || v.productType() != ProductType.PHYSICAL) {
+        if (!v.ownStock()) {
             return;
         }
         int available = inventory.availability(List.of(v.variantId())).getOrDefault(v.variantId(), 0);
@@ -172,8 +189,10 @@ public class CartService {
                 .filter(v -> v.sellingMethod() == SellingMethod.AFFILIATE)
                 .map(SellableVariant::productId).distinct().toList();
         Map<Long, AffiliateService.OfferView> offers = affiliate.offers(affiliateProductIds);
+        boolean affiliateOnly = settings.affiliateOnly(cart.getStorefront());
         List<CartLine> lines = new ArrayList<>();
         long subtotal = 0;
+        long checkoutSubtotal = 0;
         int count = 0;
         boolean shipping = false;
         boolean problems = false;
@@ -200,9 +219,9 @@ public class CartService {
                 }
             } else {
                 hasDirect = true;
-                if (!v.purchasableIn(cart.getStorefront())) {
+                if (affiliateOnly || !v.purchasableIn(cart.getStorefront())) {
                     problem = "No longer available";
-                } else if (v.productType() == ProductType.PHYSICAL) {
+                } else if (v.ownStock()) {
                     available = stock.getOrDefault(v.variantId(), 0);
                     if (available < item.getQuantity()) {
                         problem = available <= 0 ? "Out of stock" : "Only " + available + " left";
@@ -213,7 +232,8 @@ public class CartService {
             if (problem == null) {
                 subtotal += lineTotal;
                 count += item.getQuantity();
-                shipping |= v.sellingMethod() == SellingMethod.DIRECT && v.productType() == ProductType.PHYSICAL;
+                shipping |= v.needsShipping();
+                if (v.sellingMethod().onSite()) checkoutSubtotal += lineTotal;
             } else {
                 problems = true;
             }
@@ -222,7 +242,7 @@ public class CartService {
                     v == null ? null : v.productType().name(), v == null ? null : v.sellingMethod().name(),
                     v == null ? null : v.imageUrl(), unit, item.getQuantity(), lineTotal, available, merchant, goUrl, problem));
         }
-        return new CartView(cart.getStorefront().path(), lines, subtotal, count, shipping, problems, props.affiliateOnly(),
-                hasDirect, hasAffiliate);
+        return new CartView(cart.getStorefront().path(), lines, subtotal, count, shipping, problems, affiliateOnly,
+                hasDirect, hasAffiliate, checkoutSubtotal);
     }
 }

@@ -65,6 +65,10 @@ public class StoreSettings {
     @Column(name = "cod_enabled", nullable = false)
     private boolean codEnabled;
 
+    /** Null until an admin chooses; then the AFFILIATE_ONLY default no longer applies to this storefront. */
+    @Column(name = "onsite_checkout")
+    private Boolean onsiteCheckout;
+
     @Column(name = "cod_max_minor")
     private Long codMaxMinor;
 
@@ -153,6 +157,8 @@ public class StoreSettings {
     public void setReviewsAutoApprove(boolean reviewsAutoApprove) { this.reviewsAutoApprove = reviewsAutoApprove; }
     public boolean isCodEnabled() { return codEnabled; }
     public void setCodEnabled(boolean codEnabled) { this.codEnabled = codEnabled; }
+    public Boolean getOnsiteCheckout() { return onsiteCheckout; }
+    public void setOnsiteCheckout(Boolean onsiteCheckout) { this.onsiteCheckout = onsiteCheckout; }
     public Long getCodMaxMinor() { return codMaxMinor; }
     public void setCodMaxMinor(Long codMaxMinor) { this.codMaxMinor = codMaxMinor; }
     public long getCodFeeMinor() { return codFeeMinor; }

@@ -140,7 +140,7 @@ public class OrderService {
     }
 
     private boolean reReserve(CustomerOrder order) {
-        for (OrderLine line : order.physicalLines()) {
+        for (OrderLine line : order.stockLines()) {
             if (!inventory.tryReserve(order.getId(), line.getVariantId(), line.getQuantity())) {
                 inventory.releaseForOrder(order.getId());
                 return false;
@@ -276,7 +276,7 @@ public class OrderService {
             inventory.releaseForOrder(o.getId());
         } else {
             for (OrderLine line : o.physicalLines()) {
-                inventory.restock(o.getId(), line.getVariantId(), line.getQuantity());
+                if (line.isOwnStock()) inventory.restock(o.getId(), line.getVariantId(), line.getQuantity());
                 line.setFulfillmentStatus(OrderLine.Fulfillment.CANCELLED);
             }
         }
@@ -305,7 +305,7 @@ public class OrderService {
         if (full) {
             boolean stockWasCommitted = o.getStatus() != CustomerOrder.Status.NEEDS_ATTENTION;
             for (OrderLine line : o.getLines()) {
-                if (line.isPhysical() && restock && stockWasCommitted) {
+                if (line.isOwnStock() && restock && stockWasCommitted) {
                     inventory.restock(o.getId(), line.getVariantId(), line.getQuantity());
                 }
                 line.setFulfillmentStatus(OrderLine.Fulfillment.REFUNDED);

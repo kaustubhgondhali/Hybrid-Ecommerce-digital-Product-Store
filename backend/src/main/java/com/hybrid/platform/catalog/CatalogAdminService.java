@@ -102,13 +102,13 @@ public class CatalogAdminService {
     private final ImageOptimizer images;
     private final SeoRedirectService redirects;
     private final AuditService audit;
-    private final AppProperties props;
+    private final SettingsService settings;
     private final org.springframework.context.ApplicationEventPublisher events;
 
     public CatalogAdminService(ProductRepository products, ProductVariantRepository variants,
                                CategoryRepository categories, InventoryService inventory, AffiliateService affiliate,
                                DeliveryReadinessService delivery, FileStorage storage, ImageOptimizer images,
-                               SeoRedirectService redirects, AuditService audit, AppProperties props,
+                               SeoRedirectService redirects, AuditService audit, SettingsService settings,
                                org.springframework.context.ApplicationEventPublisher events) {
         this.events = events;
         this.products = products;
@@ -121,7 +121,7 @@ public class CatalogAdminService {
         this.images = images;
         this.redirects = redirects;
         this.audit = audit;
-        this.props = props;
+        this.settings = settings;
     }
 
     /** GST slabs in basis points. */
@@ -152,18 +152,18 @@ public class CatalogAdminService {
         if (in.productType() == null || in.sellingMethod() == null) {
             throw ApiException.badRequest("TYPE_REQUIRED", "Choose a product type and a selling method");
         }
-        SellingMethod method = requireAffiliateMethod(in.sellingMethod());
-        requireText(in.title(), "Title");
         Storefront sf = admin.storefront();
+        SellingMethod method = requireAllowedMethod(sf, in.sellingMethod(), in.productType());
+        requireText(in.title(), "Title");
         Product p = new Product(sf, in.productType(), method, in.title().trim(),
                 uniqueSlug(sf, in.slug() == null || in.slug().isBlank() ? in.title() : in.slug(), null));
         applyDetails(sf, p, in);
         ProductVariant v = new ProductVariant("Default", true, 0);
-        if (p.isDirect()) {
+        if (p.isOnSite()) {
             v.setPriceMinor(validPrice(in.priceMinor()));
             v.setCompareAtMinor(validPrice(in.compareAtMinor()));
         }
-        if (p.isPhysicalDirect()) {
+        if (p.isOnSite() && p.getProductType() == ProductType.PHYSICAL) {
             v.setSku(requireUniqueSku(in.sku(), null));
             v.setWeightGrams(in.weightGrams());
         }
@@ -180,7 +180,11 @@ public class CatalogAdminService {
         if (expectedVersion != null && expectedVersion != p.getVersion()) {
             throw ApiException.conflict("CONCURRENT_MODIFICATION", "This product was changed by someone else. Reload and try again.");
         }
-        if (in.sellingMethod() != null) requireAffiliateMethod(in.sellingMethod());
+        if (in.sellingMethod() != null || in.productType() != null) {
+            SellingMethod method = in.sellingMethod() != null ? in.sellingMethod() : p.getSellingMethod();
+            ProductType type = in.productType() != null ? in.productType() : p.getProductType();
+            if (method != p.getSellingMethod() || type != p.getProductType()) requireAllowedMethod(admin.storefront(), method, type);
+        }
         boolean typeChange = (in.productType() != null && in.productType() != p.getProductType())
                 || (in.sellingMethod() != null && in.sellingMethod() != p.getSellingMethod());
         if (typeChange) {
@@ -192,7 +196,7 @@ public class CatalogAdminService {
             }
             if (in.productType() != null) p.setProductType(in.productType());
             if (in.sellingMethod() != null) p.setSellingMethod(in.sellingMethod());
-            if (!p.isDirect()) {
+            if (!p.isOnSite()) {
                 p.getVariants().forEach(v -> { if (!v.isDefaultVariant()) v.setActive(false); v.setPriceMinor(null); v.setCompareAtMinor(null); });
             }
         }
@@ -247,7 +251,7 @@ public class CatalogAdminService {
     @Transactional
     public AdminProductView addVariant(AdminPrincipal admin, Long productId, VariantInput in) {
         Product p = require(admin.storefront(), productId);
-        if (!p.isDirect()) {
+        if (!p.isOnSite()) {
             throw ApiException.rule("AFFILIATE_SINGLE_VARIANT", "Affiliate products have exactly one variant");
         }
         requireText(in.name(), "Variant name");
@@ -283,7 +287,7 @@ public class CatalogAdminService {
     }
 
     private void applyVariant(Product p, ProductVariant v, VariantInput in) {
-        if (p.isDirect()) {
+        if (p.isOnSite()) {
             if (in.priceMinor() != null) v.setPriceMinor(validPrice(in.priceMinor()));
             if (in.compareAtMinor() != null) v.setCompareAtMinor(in.compareAtMinor() <= 0 ? null : validPrice(in.compareAtMinor()));
         }
@@ -552,7 +556,7 @@ public class CatalogAdminService {
         if (p.getProductType() == ProductType.DIGITAL) {
             if (in.digitalFormat() != null) p.setDigitalFormat(trimTo(in.digitalFormat(), 60));
             if (in.deliveryKind() != null) p.setDeliveryKind(in.deliveryKind());
-            if (p.getDeliveryKind() == null && p.isDirect()) p.setDeliveryKind(DeliveryKind.DOWNLOAD);
+            if (p.getDeliveryKind() == null && p.isOnSite()) p.setDeliveryKind(DeliveryKind.DOWNLOAD);
         } else {
             p.setDigitalFormat(null);
             p.setDeliveryKind(null);
@@ -595,16 +599,19 @@ public class CatalogAdminService {
         return items.isEmpty() ? null : String.join("\n", items);
     }
 
-    private SellingMethod requireAffiliateMethod(SellingMethod method) {
-        if (props.affiliateOnly() && method != SellingMethod.AFFILIATE) {
+    private SellingMethod requireAllowedMethod(Storefront sf, SellingMethod method, ProductType type) {
+        if (method == SellingMethod.DROPSHIP && type == ProductType.DIGITAL) {
+            throw ApiException.rule("DROPSHIP_PHYSICAL_ONLY", "Dropshipping is only for physical products");
+        }
+        if (method.onSite() && settings.affiliateOnly(sf)) {
             throw ApiException.rule("AFFILIATE_ONLY",
-                    "This site is affiliate-only. Create partner offers that redirect shoppers to the merchant store.");
+                    "Checkout is off for this store. Turn on \"Sell on this site\" in Settings to add own-stock or dropship products.");
         }
         return method;
     }
 
     private void syncInventory(Product p) {
-        if (p.isPhysicalDirect()) {
+        if (p.isOwnStock()) {
             p.getVariants().stream().filter(v -> v.getId() != null)
                     .forEach(v -> inventory.ensureItem(v.getId(), p.getStorefront()));
         }
@@ -612,17 +619,17 @@ public class CatalogAdminService {
 
     private List<String> problems(Product p) {
         boolean hasLink = p.getSellingMethod() == SellingMethod.AFFILIATE && p.getId() != null && affiliate.hasActiveLink(p.getId());
-        boolean ready = p.getProductType() == ProductType.DIGITAL && p.isDirect() && delivery.isReady(p.getId(), p.getDeliveryKind());
+        boolean ready = p.getProductType() == ProductType.DIGITAL && p.isOnSite() && delivery.isReady(p.getId(), p.getDeliveryKind());
         return ProductRules.publishProblems(p, new ProductRules.Context(hasLink, ready));
     }
 
     private AdminProductView view(Product p) {
-        Map<Long, Integer> stock = p.isPhysicalDirect()
+        Map<Long, Integer> stock = p.isOwnStock()
                 ? inventory.availability(p.getVariants().stream().map(ProductVariant::getId).filter(Objects::nonNull).toList())
                 : Map.of();
         List<AdminVariantView> vs = p.getVariants().stream().map(v -> new AdminVariantView(v.getId(), v.getName(), v.getSku(),
                 v.getPriceMinor(), v.getCompareAtMinor(), v.getWeightGrams(), v.isActive(), v.isDefaultVariant(),
-                p.isPhysicalDirect() ? stock.get(v.getId()) : null)).toList();
+                p.isOwnStock() ? stock.get(v.getId()) : null)).toList();
         List<AdminImageView> imgs = p.getImages().stream().map(i -> new AdminImageView(i.getId(), i.url(), i.thumbUrl(), i.getAltText())).toList();
         List<AdminVideoView> vids = p.getVideos().stream().map(v -> new AdminVideoView(v.getId(), v.url(), v.posterUrl(),
                 v.getTitle(), v.getDurationSeconds(), v.getWidth(), v.getHeight(), v.getSizeBytes())).toList();

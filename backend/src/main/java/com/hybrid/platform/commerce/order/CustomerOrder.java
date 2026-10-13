@@ -169,6 +169,11 @@ public class CustomerOrder {
         return lines.stream().filter(OrderLine::isPhysical).toList();
     }
 
+    /** Lines reserved from, and restocked to, our own inventory. */
+    public List<OrderLine> stockLines() {
+        return lines.stream().filter(OrderLine::isOwnStock).toList();
+    }
+
     public List<OrderLine> digitalLines() {
         return lines.stream().filter(l -> !l.isPhysical()).toList();
     }

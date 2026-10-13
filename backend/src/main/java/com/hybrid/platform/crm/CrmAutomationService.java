@@ -9,6 +9,7 @@ import com.hybrid.platform.common.audit.AuditService;
 import com.hybrid.platform.common.crypto.CryptoService;
 import com.hybrid.platform.common.error.ApiException;
 import com.hybrid.platform.commerce.coupon.CouponRepositories;
+import com.hybrid.platform.commerce.settings.SettingsService;
 import com.hybrid.platform.notification.MailService;
 import com.hybrid.platform.security.AdminPrincipal;
 import org.slf4j.Logger;
@@ -79,13 +80,15 @@ public class CrmAutomationService {
     private final AuditService audit;
     private final AppProperties props;
     private final SubscriptionService subscriptions;
+    private final SettingsService storeSettings;
 
     public CrmAutomationService(CrmRepositories.AutomationSettingsRepository settings, CrmQueries queries, MarketingMailer mailer,
                                 MailService mail, ConsentService consents, CouponRepositories.CouponRepository coupons,
                                 CatalogPublicService catalog, AffiliateService affiliate, LinkHealthService linkHealth,
                                 TelegramService telegram, CryptoService crypto, AuditService audit, AppProperties props,
-                                SubscriptionService subscriptions) {
+                                SubscriptionService subscriptions, SettingsService storeSettings) {
         this.subscriptions = subscriptions;
+        this.storeSettings = storeSettings;
         this.settings = settings;
         this.queries = queries;
         this.mailer = mailer;
@@ -255,7 +258,7 @@ public class CrmAutomationService {
             StringBuilder body = new StringBuilder("Hi,\n\nHere are this week's top deals at ").append(store).append(":\n");
             appendDeals(body, sf, deals);
             body.append("\nSee all deals: ").append(mailer.storeUrl(sf)).append("\n");
-            if (props.affiliateOnly()) body.append("\nPartner prices change often, so check the current price before you buy.\n");
+            if (storeSettings.affiliateOnly(sf)) body.append("\nPartner prices change often, so check the current price before you buy.\n");
             sent += subscriptions.sendDigest(sf, "This week's top deals at " + store, body.toString(), week, reached, MAX_PER_RUN - sent);
         }
         if (s.isReviewRequestEnabled()) {
@@ -294,15 +297,15 @@ public class CrmAutomationService {
         List<CrmQueries.Line> lines = queries.cartLines(sf, c.id(), 5);
         String store = mailer.storeName(sf);
         StringBuilder body = new StringBuilder("Hi ").append(c.firstName()).append(",\n\n")
-                .append(props.affiliateOnly() ? "You saved these deals at " : "You left these in your cart at ").append(store).append(":\n");
+                .append(storeSettings.affiliateOnly(sf) ? "You saved these deals at " : "You left these in your cart at ").append(store).append(":\n");
         for (CrmQueries.Line l : lines) {
             body.append("- ").append(l.title()).append(l.quantity() > 1 ? " (x" + l.quantity() + ")" : "")
                     .append("\n  ").append(mailer.productUrl(sf, l.slug())).append("\n");
         }
         if (c.cartItems() > lines.size()) body.append("...and ").append(c.cartItems() - lines.size()).append(" more.\n");
         body.append("\nPick up where you left off: ").append(mailer.storeUrl(sf)).append("/cart\n");
-        if (props.affiliateOnly()) body.append("\nPartner prices change often, so check the current price before you buy.\n");
-        String subject = props.affiliateOnly() ? "Your saved deals at " + store + " are waiting"
+        if (storeSettings.affiliateOnly(sf)) body.append("\nPartner prices change often, so check the current price before you buy.\n");
+        String subject = storeSettings.affiliateOnly(sf) ? "Your saved deals at " + store + " are waiting"
                 : "You left " + (c.cartItems() == 1 ? "an item" : c.cartItems() + " items") + " in your " + store + " cart";
         mailer.send(sf, c.id(), c.email(), subject, body.toString(), "CRM_CART_REMINDER");
         return true;
@@ -317,7 +320,7 @@ public class CrmAutomationService {
         for (CrmQueries.Line l : queries.latestProducts(sf, 3)) {
             body.append("- ").append(l.title()).append("\n  ").append(mailer.productUrl(sf, l.slug())).append("\n");
         }
-        if (s.getWinbackCouponCode() != null && !props.affiliateOnly()) {
+        if (s.getWinbackCouponCode() != null && !storeSettings.affiliateOnly(sf)) {
             body.append("\nAs a thank-you for coming back, use code ").append(s.getWinbackCouponCode()).append(" at checkout.\n");
         }
         body.append("\nSee everything: ").append(mailer.storeUrl(sf)).append("\n");
@@ -349,7 +352,7 @@ public class CrmAutomationService {
                 .append(store).append(":\n");
         appendDeals(body, sf, deals);
         body.append("\nSee all deals: ").append(mailer.storeUrl(sf)).append("\n");
-        if (props.affiliateOnly()) body.append("\nPartner prices change often, so check the current price before you buy.\n");
+        if (storeSettings.affiliateOnly(sf)) body.append("\nPartner prices change often, so check the current price before you buy.\n");
         mailer.send(sf, c.id(), c.email(), "This week's top deals at " + store, body.toString(), "CRM_WEEKLY_DIGEST");
         return true;
     }
@@ -373,7 +376,7 @@ public class CrmAutomationService {
                 .append("Partner clicks: ").append(d.clicks()).append("\n")
                 .append("Partner sales reported: ").append(d.partnerSales())
                 .append(d.commissionMinor() > 0 ? " (commission " + MarketingMailer.rupees(d.commissionMinor()) + ")" : "").append("\n");
-        if (!props.affiliateOnly() || d.orders() > 0) {
+        if (!storeSettings.affiliateOnly(sf) || d.orders() > 0) {
             b.append("Orders: ").append(d.orders()).append(d.revenueMinor() > 0 ? " (" + MarketingMailer.rupees(d.revenueMinor()) + ")" : "").append("\n");
         }
         b.append("New customers: ").append(d.newCustomers()).append("\n")
@@ -442,6 +445,6 @@ public class CrmAutomationService {
                 s.isReviewRequestEnabled(), s.getReviewRequestDays(), s.isDailySummaryEnabled(), s.getDailySummaryHour(),
                 s.isLinkCheckEnabled(), queries.brokenLinkCount(sf), s.isTelegramEnabled(), s.getTelegramTokenEnc() != null,
                 s.getTelegramChatId(), s.isTelegramPostNew(), s.isTelegramPostDrops(), sent, consents.subscriberCount(sf),
-                mailer.smtpReady(sf), props.affiliateOnly(), s.getUpdatedAt());
+                mailer.smtpReady(sf), storeSettings.affiliateOnly(sf), s.getUpdatedAt());
     }
 }

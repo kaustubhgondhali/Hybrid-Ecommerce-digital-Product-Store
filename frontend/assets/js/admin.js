@@ -11,6 +11,16 @@
   const API = '/api/' + SF + '/admin';
   const ROLES = ['MASTER_ADMIN', 'CATALOG_MANAGER', 'ORDER_MANAGER', 'SUPPORT'];
   const GST_RATES = [0, 25, 300, 500, 1200, 1800, 2800];
+  const METHODS = {
+    DIRECT: { label: 'Own stock', long: 'Own stock (we ship from our inventory)', badge: 'blue' },
+    DROPSHIP: { label: 'Dropship', long: 'Dropshipping (supplier ships to the customer)', badge: 'amber' },
+    AFFILIATE: { label: 'Affiliate', long: 'Affiliate (customer buys on the partner store)', badge: 'purple' }
+  };
+  const methodBadge = (m) => el('span', { class: 'badge ' + (METHODS[m] ? METHODS[m].badge : ''), text: METHODS[m] ? METHODS[m].label : UI.label(m) });
+  const onSiteMethod = (m) => m === 'DIRECT' || m === 'DROPSHIP';
+  /** Selling methods an admin can pick; own stock and dropship need checkout on, dropship needs a physical product. */
+  const methodOptions = (type) => (window.AdminKit && window.AdminKit.affiliateOnly ? ['AFFILIATE'] : ['DIRECT', 'DROPSHIP', 'AFFILIATE'])
+    .filter((m) => m !== 'DROPSHIP' || type !== 'DIGITAL').map((m) => [m, METHODS[m].long]);
   const ORDER_STATUSES = ['PENDING_PAYMENT', 'CONFIRMED', 'PAID', 'SHIPPED', 'DELIVERED', 'COMPLETED', 'NEEDS_ATTENTION', 'CANCELLED', 'EXPIRED', 'PARTIALLY_REFUNDED', 'REFUNDED'];
   let me = null;
 
@@ -323,7 +333,7 @@
       input('q', { type: 'search', placeholder: 'Search title or SKU', value: f.q }),
       selectEl('status', [['', 'Any status'], 'DRAFT', 'PUBLISHED', 'ARCHIVED'], f.status),
       selectEl('type', [['', 'Any type'], 'PHYSICAL', 'DIGITAL'], f.type),
-      selectEl('method', [['', 'Any method'], 'DIRECT', 'AFFILIATE'], f.method),
+      selectEl('method', [['', 'Any channel'], ...Object.keys(METHODS).map((m) => [m, METHODS[m].label])], f.method),
       el('button', { class: 'btn secondary', type: 'submit', text: 'Filter' }));
     filters.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -334,8 +344,7 @@
       const tr = el('tr', { class: 'clickable' },
         el('td', null, p.imageUrl ? el('img', { class: 'thumb-sm', src: p.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : el('div', { class: 'thumb-sm' })),
         el('td', null, el('a', { href: '#/products/' + p.id, text: p.title }), el('div', { class: 'muted small', text: p.slug })),
-        el('td', null, el('span', { class: 'badge', text: UI.label(p.productType) }), ' ',
-          el('span', { class: 'badge ' + (p.sellingMethod === 'AFFILIATE' ? 'purple' : 'blue'), text: UI.label(p.sellingMethod) })),
+        el('td', null, el('span', { class: 'badge', text: UI.label(p.productType) }), ' ', methodBadge(p.sellingMethod)),
         el('td', null, UI.badge(p.status)),
         el('td', { class: 'num', text: p.priceMinor != null ? money(p.priceMinor) : '\u2014' }),
         el('td', { class: 'muted small', text: UI.date(p.updatedAt) }));
@@ -352,11 +361,7 @@
     const categories = await Api.get(API + '/categories');
     const type = selectEl('productType', [['PHYSICAL', 'Physical product'], ['DIGITAL', 'Digital product']], SF === 'digital' ? 'DIGITAL' : 'PHYSICAL');
     const affiliateOnly = !!(window.AdminKit && window.AdminKit.affiliateOnly);
-    const method = selectEl('sellingMethod',
-      affiliateOnly
-        ? [['AFFILIATE', 'Affiliate (redirect to partner store)']]
-        : [['AFFILIATE', 'Affiliate (redirect to partner store)'], ['DIRECT', 'Sold directly (we take payment)']],
-      'AFFILIATE');
+    const method = selectEl('sellingMethod', methodOptions(type.value), affiliateOnly ? 'AFFILIATE' : 'DIRECT');
     const priceRow = el('div', { class: 'row' },
       UI.field('Price (\u20B9)', input('price', { inputmode: 'decimal', placeholder: '499.00' })),
       UI.field('Compare-at price (\u20B9, optional)', input('compareAt', { inputmode: 'decimal' })));
@@ -367,7 +372,9 @@
       UI.field('Delivery', selectEl('deliveryKind', [['DOWNLOAD', 'File download'], ['LICENSE_KEY', 'License key'], ['DOWNLOAD_AND_LICENSE', 'Download + license key']], 'DOWNLOAD')),
       UI.field('Format (optional)', input('digitalFormat', { maxlength: '60', placeholder: 'PDF, ZIP, Windows installer\u2026' })));
     const sync = () => {
-      const direct = method.value === 'DIRECT';
+      const current = method.value;
+      mount(method, methodOptions(type.value).map(([value, text]) => el('option', { value, text, selected: value === current })));
+      const direct = onSiteMethod(method.value);
       priceRow.hidden = !direct;
       physicalRow.hidden = !(direct && type.value === 'PHYSICAL');
       digitalRow.hidden = !(type.value === 'DIGITAL' && direct);
@@ -385,10 +392,10 @@
       priceRow, physicalRow, digitalRow,
       el('p', { class: 'muted small', text: affiliateOnly
         ? 'Created as a draft affiliate offer. Add images and the partner link next, then publish. Shoppers will leave this site to buy.'
-        : 'The product is created as a draft. Add images, stock, files or the affiliate link next, then publish.' }),
+        : 'The product is created as a draft. Add images, stock, files or the affiliate link next, then publish. Shoppers see every product the same way, whatever the channel.' }),
       el('div', { class: 'actions' }, el('button', { class: 'btn', type: 'submit', text: 'Create draft' }), el('a', { href: '#/products', text: 'Cancel' })));
     onSubmit(form, async (v) => {
-      const direct = v.sellingMethod === 'DIRECT';
+      const direct = onSiteMethod(v.sellingMethod);
       const body = {
         productType: v.productType, sellingMethod: v.sellingMethod, title: v.title, summary: v.summary || null,
         brand: v.brand || null, categoryId: v.categoryId ? Number(v.categoryId) : null,
@@ -431,7 +438,7 @@
       el('p', { class: 'small' }, el('a', { href: '#/products', text: '\u2190 Products' })),
       head(p.title, p.status === 'PUBLISHED' ? el('a', { class: 'btn ghost', href: '/' + SF + '/p/' + encodeURIComponent(p.slug), target: '_blank', rel: 'noopener', text: 'View in store' }) : null, actions),
       el('div', { class: 'actions mb' }, UI.badge(p.status), el('span', { class: 'badge', text: UI.label(p.productType) }),
-        el('span', { class: 'badge ' + (p.sellingMethod === 'AFFILIATE' ? 'purple' : 'blue'), text: UI.label(p.sellingMethod) }),
+        methodBadge(p.sellingMethod),
         p.typeLocked ? el('span', { class: 'muted small', text: 'Type and selling method are locked (product has orders or an affiliate link).' }) : null),
       statusMsg,
       p.publishProblems && p.publishProblems.length && p.status !== 'PUBLISHED'
@@ -444,8 +451,8 @@
       el('div', { class: 'row' },
         UI.field('Product type', selectEl('productType', ['PHYSICAL', 'DIGITAL'], p.productType, { disabled: p.typeLocked || !writable })),
         UI.field('Selling method', selectEl('sellingMethod',
-          window.AdminKit.affiliateOnly ? ['AFFILIATE'] : ['AFFILIATE', 'DIRECT'],
-          p.sellingMethod, { disabled: p.typeLocked || !writable || window.AdminKit.affiliateOnly }))),
+          methodOptions(p.productType).concat(methodOptions(p.productType).some(([m]) => m === p.sellingMethod) ? [] : [[p.sellingMethod, METHODS[p.sellingMethod].long]]),
+          p.sellingMethod, { disabled: p.typeLocked || !writable }))),
       UI.field('Title', input('title', { value: p.title, required: true, maxlength: '200' })),
       UI.field('URL slug', input('slug', { value: p.slug, maxlength: '160' }), '/' + SF + '/p/' + p.slug),
       UI.field('Short summary', input('summary', { value: p.summary || '', maxlength: '500' })),
@@ -456,7 +463,7 @@
       p.productType === 'DIGITAL' ? el('div', { class: 'row' },
         UI.field('Delivery', selectEl('deliveryKind', [['DOWNLOAD', 'File download'], ['LICENSE_KEY', 'License key'], ['DOWNLOAD_AND_LICENSE', 'Download + license key']], p.deliveryKind || 'DOWNLOAD')),
         UI.field('Format', input('digitalFormat', { value: p.digitalFormat || '', maxlength: '60' }))) : null,
-      p.sellingMethod === 'DIRECT' ? el('div', { class: 'row' },
+      onSiteMethod(p.sellingMethod) ? el('div', { class: 'row' },
         UI.field('HSN / SAC code', input('hsnSac', { value: p.hsnSac || '', maxlength: '8', inputmode: 'numeric', placeholder: 'Store default' }),
           'Printed on GST invoices. Leave empty to use the store default.'),
         UI.field('GST rate', selectEl('gstRateBps', [['', 'Not set (0%)'], ...GST_RATES.map((r) => [String(r), r / 100 + '%'])],
@@ -478,7 +485,7 @@
     });
 
     const sections = [header, details, dealContentSection(p, writable, refresh)];
-    if (p.sellingMethod === 'DIRECT') sections.push(variantsSection(p, writable, refresh));
+    if (onSiteMethod(p.sellingMethod)) sections.push(variantsSection(p, writable, refresh));
     sections.push(imagesSection(p, writable, refresh), videosSection(p, writable, refresh));
     if (p.sellingMethod === 'AFFILIATE') sections.push(affiliateSection(p, refresh));
     if (p.productType === 'DIGITAL' && p.sellingMethod === 'DIRECT') sections.push(await deliverySection(p, refresh));
@@ -553,6 +560,7 @@
 
   function variantsSection(p, writable, refresh) {
     const physical = p.productType === 'PHYSICAL';
+    const ownStock = physical && p.sellingMethod === 'DIRECT';
     const rows = p.variants.map((v) => {
       const name = input('name', { value: v.name, maxlength: '120' });
       const sku = input('sku', { value: v.sku || '', maxlength: '80' });
@@ -574,11 +582,11 @@
       }));
       return el('tr', null, el('td', null, name), physical ? el('td', null, sku) : null, el('td', null, price), el('td', null, compare),
         physical ? el('td', null, weight) : null, el('td', null, active),
-        physical ? el('td', { class: 'num', text: v.available == null ? '\u2014' : String(v.available) }) : null,
+        ownStock ? el('td', { class: 'num', text: v.available == null ? '\u2014' : String(v.available) }) : null,
         el('td', null, writable ? save : null));
     });
     const headers = ['Name', physical ? 'SKU' : null, 'Price (\u20B9)', 'Compare-at (\u20B9)', physical ? 'Weight (g)' : null, 'Active',
-      physical ? el('th', { class: 'num', text: 'In stock' }) : null, ''].filter((h) => h !== null);
+      ownStock ? el('th', { class: 'num', text: 'In stock' }) : null, ''].filter((h) => h !== null);
 
     const add = el('form', { class: 'inline-form mt' },
       UI.field('New option name', input('name', { required: true, maxlength: '120', placeholder: 'Large / Blue' })),
@@ -594,7 +602,8 @@
       refresh();
     });
     return el('div', { class: 'card' }, el('h2', { text: 'Pricing & options' }),
-      physical ? el('p', { class: 'muted small' }, 'Stock levels are managed on the ', el('a', { href: '#/inventory', text: 'Inventory' }), ' page.') : null,
+      ownStock ? el('p', { class: 'muted small' }, 'Stock levels are managed on the ', el('a', { href: '#/inventory', text: 'Inventory' }), ' page.') : null,
+      physical && !ownStock ? el('p', { class: 'muted small', text: 'Dropship products are shipped by your supplier, so they do not use your inventory.' }) : null,
       table(headers, rows), writable ? add : null);
   }
 
@@ -1385,6 +1394,18 @@
       UI.toast('Store details saved', 'success');
     });
 
+    const channelForm = el('form', { class: 'card' }, el('h2', { text: 'Selling channels' }),
+      el('p', { class: 'muted small', text: 'Affiliate products are always available. Turn this on to also sell your own stock and dropship products with cart checkout. Shoppers see one normal store either way.' }),
+      el('label', { class: 'check mb' }, input('onsiteCheckout', { type: 'checkbox', checked: !store.affiliateOnly }),
+        'Sell on this site (own stock & dropshipping, with cart and checkout)'),
+      el('button', { class: 'btn', type: 'submit', text: 'Save' }));
+    onSubmit(channelForm, async (v) => {
+      await Api.put(API + '/settings/store', { onsiteCheckout: Boolean(v.onsiteCheckout) });
+      window.AdminKit.affiliateOnly = !v.onsiteCheckout;
+      settingsView();
+      UI.toast('Saved', 'success');
+    });
+
     const commerceForm = el('form', { class: 'card' }, el('h2', { text: store.affiliateOnly ? 'Reviews' : 'Delivery, cash on delivery & reviews' }),
       store.affiliateOnly
         ? el('p', { class: 'muted small', text: 'Affiliate-only mode is on: shoppers buy on partner sites, so delivery areas and cash on delivery are not used on this storefront.' })
@@ -1474,7 +1495,7 @@
     onSubmit(testForm, async (v) => { await Api.post(API + '/settings/smtp/test', { to: v.to }); }, 'Test email sent. Check the inbox (and spam folder).');
     smtpForm.appendChild(el('div', { class: 'mt' }, testForm));
 
-    mount(view(), head('Settings'), storeForm, commerceForm,
+    mount(view(), head('Settings'), storeForm, channelForm, commerceForm,
       el('div', { class: 'card' }, el('h2', { text: 'Shipping methods' }),
         table(['Name', 'Rate (\u20B9)', 'Free above (\u20B9)', 'Active', ''], methodRows, 'No shipping methods.'), addMethod),
       smtpForm);

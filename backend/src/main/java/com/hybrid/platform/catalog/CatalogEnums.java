@@ -7,7 +7,17 @@ public final class CatalogEnums {
 
     public enum ProductType { PHYSICAL, DIGITAL }
 
-    public enum SellingMethod { DIRECT, AFFILIATE }
+    /**
+     * DIRECT = own stock, DROPSHIP = supplier ships (physical only), AFFILIATE = bought on a partner site.
+     * DIRECT and DROPSHIP are both paid for on this site.
+     */
+    public enum SellingMethod {
+        DIRECT, DROPSHIP, AFFILIATE;
+
+        public boolean onSite() {
+            return this != AFFILIATE;
+        }
+    }
 
     public enum ProductStatus { DRAFT, PUBLISHED, ARCHIVED }
 

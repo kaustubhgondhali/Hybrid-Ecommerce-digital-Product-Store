@@ -72,12 +72,13 @@ public class OrderLine {
     protected OrderLine() {
     }
 
-    public OrderLine(Long productId, Long variantId, ProductType productType, String sku, String title,
-                     String variantName, long unitPriceMinor, int quantity) {
+    public OrderLine(Long productId, Long variantId, ProductType productType, SellingMethod sellingMethod, String sku,
+                     String title, String variantName, long unitPriceMinor, int quantity) {
+        if (!sellingMethod.onSite()) throw new IllegalArgumentException("Partner offers are not ordered here");
         this.productId = productId;
         this.variantId = variantId;
         this.productType = productType;
-        this.sellingMethod = SellingMethod.DIRECT;
+        this.sellingMethod = sellingMethod;
         this.sku = sku;
         this.title = title;
         this.variantName = variantName;
@@ -93,6 +94,11 @@ public class OrderLine {
 
     public boolean isPhysical() {
         return productType == ProductType.PHYSICAL;
+    }
+
+    /** Taken from our own inventory (dropship lines are fulfilled from the supplier's stock). */
+    public boolean isOwnStock() {
+        return isPhysical() && sellingMethod == SellingMethod.DIRECT;
     }
 
     public Long getId() { return id; }

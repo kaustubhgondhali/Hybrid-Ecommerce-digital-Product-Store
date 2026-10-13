@@ -28,8 +28,17 @@ public class CatalogQueryService {
                                   Integer gstRateBps) {
 
         public boolean purchasableIn(Storefront sf) {
-            return storefront == sf && sellingMethod == SellingMethod.DIRECT && status == ProductStatus.PUBLISHED
+            return storefront == sf && sellingMethod.onSite() && status == ProductStatus.PUBLISHED
                     && variantActive && priceMinor != null && priceMinor >= ProductRules.MIN_PRICE_MINOR;
+        }
+
+        /** Physical goods taken from our own inventory (dropship stock is the supplier's). */
+        public boolean ownStock() {
+            return productType == ProductType.PHYSICAL && sellingMethod == SellingMethod.DIRECT;
+        }
+
+        public boolean needsShipping() {
+            return productType == ProductType.PHYSICAL && sellingMethod.onSite();
         }
 
         /** Affiliate offers can sit in the cart for later partner purchase; direct items must be purchasable. */

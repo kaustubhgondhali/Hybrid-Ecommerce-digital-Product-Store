@@ -4,7 +4,6 @@ import com.hybrid.platform.affiliate.AffiliateService;
 import com.hybrid.platform.catalog.CatalogEnums.ProductStatus;
 import com.hybrid.platform.catalog.CatalogEnums.ProductType;
 import com.hybrid.platform.catalog.CatalogEnums.SellingMethod;
-import com.hybrid.platform.common.AppProperties;
 import com.hybrid.platform.common.PageResponse;
 import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.common.error.ApiException;
@@ -111,11 +110,10 @@ public class CatalogPublicService {
     private final ProductSearch search;
     private final ReviewService reviews;
     private final SettingsService settings;
-    private final AppProperties props;
 
     public CatalogPublicService(ProductRepository products, CategoryRepository categories, InventoryService inventory,
                                 AffiliateService affiliate, DeliveryReadinessService delivery, ProductSearch search,
-                                ReviewService reviews, SettingsService settings, AppProperties props) {
+                                ReviewService reviews, SettingsService settings) {
         this.settings = settings;
         this.products = products;
         this.categories = categories;
@@ -124,7 +122,6 @@ public class CatalogPublicService {
         this.delivery = delivery;
         this.search = search;
         this.reviews = reviews;
-        this.props = props;
     }
 
     /** Sorts and filters that need each product's live best offer, so they are applied after building the cards. */
@@ -143,8 +140,8 @@ public class CatalogPublicService {
         boolean cardLevel = (sort != null && CARD_SORTS.contains(sort)) || (store != null && !store.isBlank())
                 || (minDiscount != null && minDiscount > 0) || minPriceMinor != null || maxPriceMinor != null;
         if (!cardLevel) return list(sf, q, categorySlug, type, method, sort, page, size);
-        if (props.affiliateOnly()) {
-            if (method == SellingMethod.DIRECT) return PageResponse.of(Page.empty(), x -> null);
+        if (settings.affiliateOnly(sf)) {
+            if (method != null && method.onSite()) return PageResponse.of(Page.empty(), x -> null);
             method = SellingMethod.AFFILIATE;
         }
         Long categoryId = null;
@@ -233,8 +230,8 @@ public class CatalogPublicService {
     @Transactional(readOnly = true)
     public PageResponse<ProductCard> list(Storefront sf, String q, String categorySlug, ProductType type,
                                           SellingMethod method, String sort, int page, int size) {
-        if (props.affiliateOnly()) {
-            if (method == SellingMethod.DIRECT) {
+        if (settings.affiliateOnly(sf)) {
+            if (method != null && method.onSite()) {
                 return PageResponse.of(Page.empty(), p -> null);
             }
             method = SellingMethod.AFFILIATE;
@@ -285,9 +282,9 @@ public class CatalogPublicService {
             throw ApiException.notFound("PRODUCT_NOT_FOUND", "Product not found");
         }
         List<ProductVariant> active = p.activeVariants();
-        Map<Long, Integer> stock = p.isPhysicalDirect()
+        Map<Long, Integer> stock = p.isOwnStock()
                 ? inventory.availability(active.stream().map(ProductVariant::getId).toList()) : Map.of();
-        boolean digitalAvailable = p.getProductType() != ProductType.DIGITAL || !p.isDirect()
+        boolean digitalAvailable = p.getProductType() != ProductType.DIGITAL || !p.isOnSite()
                 || !DeliveryReadinessService.needsLicense(p.getDeliveryKind()) || delivery.availableLicenses(p.getId()) > 0;
         List<AffiliateService.OfferView> offerViews = p.getSellingMethod() == SellingMethod.AFFILIATE
                 ? affiliate.offerLists(List.of(p.getId())).getOrDefault(p.getId(), List.of()) : List.of();
@@ -298,9 +295,9 @@ public class CatalogPublicService {
             AffiliateService.PriceInsight i = affiliate.insights(Map.of(p.getId(), best)).get(p.getId());
             if (i != null) stats = new PriceStats(i.low30Minor(), i.high30Minor(), i.lowest30d(), i.dropPercent7d());
         }
-        List<VariantView> variants = p.isDirect()
+        List<VariantView> variants = p.isOnSite()
                 ? active.stream().map(v -> new VariantView(v.getId(), v.getName(), v.getSku(), v.getPriceMinor(),
-                v.getCompareAtMinor(), p.isPhysicalDirect() ? stock.getOrDefault(v.getId(), 0) > 0 : digitalAvailable)).toList()
+                v.getCompareAtMinor(), p.isOwnStock() ? stock.getOrDefault(v.getId(), 0) > 0 : digitalAvailable)).toList()
                 : active.stream().map(v -> new VariantView(v.getId(), v.getName(), null,
                 best == null ? null : best.displayPriceMinor(), null, best != null)).toList();
         CategoryView category = p.getCategoryId() == null ? null : categories.findById(p.getCategoryId())
@@ -330,7 +327,7 @@ public class CatalogPublicService {
     @Transactional(readOnly = true)
     public List<CategoryView> categories(Storefront sf) {
         Set<Long> withProducts = products.countByCategory(sf, ProductStatus.PUBLISHED,
-                        props.affiliateOnly() ? SellingMethod.AFFILIATE : null).stream()
+                        settings.affiliateOnly(sf) ? SellingMethod.AFFILIATE : null).stream()
                 .map(r -> (Long) r[0]).collect(Collectors.toSet());
         return categories.findByStorefrontAndActiveTrueOrderBySortOrderAscNameAsc(sf).stream()
                 .filter(c -> withProducts.contains(c.getId()))
@@ -343,7 +340,7 @@ public class CatalogPublicService {
      */
     @Transactional(readOnly = true)
     public Home home(Storefront sf) {
-        SellingMethod method = props.affiliateOnly() ? SellingMethod.AFFILIATE : null;
+        SellingMethod method = settings.affiliateOnly(sf) ? SellingMethod.AFFILIATE : null;
         List<Product> pool = products.search(sf, ProductStatus.PUBLISHED, null, null, null, method,
                 PageRequest.of(0, HOME_POOL, Sort.by(Sort.Direction.DESC, "publishedAt"))).getContent();
         List<ProductCard> cards = cardsFor(pool);
@@ -390,11 +387,11 @@ public class CatalogPublicService {
     // ------------------------------------------------------------------ helpers
 
     private boolean visible(Product p) {
-        return !props.affiliateOnly() || p.getSellingMethod() == SellingMethod.AFFILIATE;
+        return p.getSellingMethod() == SellingMethod.AFFILIATE || !settings.affiliateOnly(p.getStorefront());
     }
 
     private List<ProductCard> similar(Product p) {
-        SellingMethod method = props.affiliateOnly() ? SellingMethod.AFFILIATE : null;
+        SellingMethod method = settings.affiliateOnly(p.getStorefront()) ? SellingMethod.AFFILIATE : null;
         PageRequest page = PageRequest.of(0, 9, Sort.by(Sort.Direction.DESC, "publishedAt"));
         LinkedHashMap<Long, Product> pool = new LinkedHashMap<>();
         if (p.getCategoryId() != null) {
@@ -414,7 +411,7 @@ public class CatalogPublicService {
         Map<Long, AffiliateService.OfferView> offers = affiliate.offers(
                 list.stream().filter(p -> p.getSellingMethod() == SellingMethod.AFFILIATE).map(Product::getId).toList());
         Map<Long, AffiliateService.PriceInsight> insights = affiliate.insights(offers);
-        Map<Long, Integer> stock = inventory.availability(list.stream().filter(Product::isPhysicalDirect)
+        Map<Long, Integer> stock = inventory.availability(list.stream().filter(Product::isOwnStock)
                 .flatMap(p -> p.activeVariants().stream()).map(ProductVariant::getId).toList());
         return list.stream().map(p -> card(p, offers.get(p.getId()), insights.get(p.getId()), stock)).toList();
     }
@@ -435,7 +432,7 @@ public class CatalogPublicService {
         List<ProductVariant> active = p.activeVariants();
         ProductVariant cheapest = active.stream().filter(v -> v.getPriceMinor() != null)
                 .min(Comparator.comparing(ProductVariant::getPriceMinor)).orElse(null);
-        Boolean inStock = p.isPhysicalDirect()
+        Boolean inStock = p.isOwnStock()
                 ? active.stream().anyMatch(v -> stock.getOrDefault(v.getId(), 0) > 0) : Boolean.TRUE;
         Long price = cheapest == null ? null : cheapest.getPriceMinor();
         Long compareAt = cheapest == null ? null : cheapest.getCompareAtMinor();

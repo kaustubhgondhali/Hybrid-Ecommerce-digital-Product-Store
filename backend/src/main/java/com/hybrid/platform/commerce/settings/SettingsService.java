@@ -42,7 +42,8 @@ public class SettingsService {
                                      String sellerStateCode, Boolean pricesIncludeTax, String defaultHsnSac,
                                      Boolean reviewsAutoApprove, Boolean codEnabled, Long codMaxMinor, Long codFeeMinor,
                                      String pincodeMode, String pincodeList, String codPincodeList,
-                                     String deliveryEstimate, String whatsappNumber, String ga4Id, String metaPixelId) {
+                                     String deliveryEstimate, String whatsappNumber, String ga4Id, String metaPixelId,
+                                     Boolean onsiteCheckout) {
     }
 
     public record ShippingMethodView(Long id, String name, long rateMinor, Long freeAboveMinor, boolean active, int sortOrder) {
@@ -83,9 +84,23 @@ public class SettingsService {
     @Transactional
     public PublicStoreInfo publicInfo(Storefront sf, String currency) {
         StoreSettings s = entity(sf);
+        boolean affiliateOnly = affiliateOnly(s);
         return new PublicStoreInfo(sf.path(), s.getStoreName(), s.getSupportEmail(), currency, s.getTaxRateBps(),
-                s.isPricesIncludeTax(), !props.affiliateOnly() && s.isCodEnabled() && sf == Storefront.SHOP,
-                props.affiliateOnly(), activeShippingMethods(sf), s.getWhatsappNumber(), s.getGa4Id(), s.getMetaPixelId());
+                s.isPricesIncludeTax(), !affiliateOnly && s.isCodEnabled() && sf == Storefront.SHOP,
+                affiliateOnly, activeShippingMethods(sf), s.getWhatsappNumber(), s.getGa4Id(), s.getMetaPixelId());
+    }
+
+    /**
+     * True when this storefront only lists partner (affiliate) deals: no cart checkout, own-stock or dropship products.
+     * Admins switch it per storefront; until they do, the AFFILIATE_ONLY environment default applies.
+     */
+    @Transactional(readOnly = true)
+    public boolean affiliateOnly(Storefront sf) {
+        return settings.findById(sf).map(this::affiliateOnly).orElse(props.affiliateOnly());
+    }
+
+    private boolean affiliateOnly(StoreSettings s) {
+        return s.getOnsiteCheckout() == null ? props.affiliateOnly() : !s.getOnsiteCheckout();
     }
 
     /**
@@ -168,6 +183,7 @@ public class SettingsService {
             s.setSellerTaxId(gstin);
             if (gstin != null && s.getSellerStateCode() == null) s.setSellerStateCode(gstin.substring(0, 2));
         }
+        if (in.onsiteCheckout() != null) s.setOnsiteCheckout(in.onsiteCheckout());
         if (in.pricesIncludeTax() != null) s.setPricesIncludeTax(in.pricesIncludeTax());
         if (in.defaultHsnSac() != null) s.setDefaultHsnSac(hsn(in.defaultHsnSac()));
         if (in.reviewsAutoApprove() != null) s.setReviewsAutoApprove(in.reviewsAutoApprove());
@@ -318,7 +334,7 @@ public class SettingsService {
                 s.getSellerLegalName(), s.getSellerAddress(), s.getSellerTaxId(), s.getInvoicePrefix(),
                 s.getSellerStateCode(), s.isPricesIncludeTax(), s.getDefaultHsnSac(), s.isReviewsAutoApprove(),
                 s.isCodEnabled(), s.getCodMaxMinor(), s.getCodFeeMinor(), s.getPincodeMode(), s.getPincodeList(),
-                s.getCodPincodeList(), s.getDeliveryEstimate(), props.affiliateOnly(), s.getUpdatedAt(),
+                s.getCodPincodeList(), s.getDeliveryEstimate(), affiliateOnly(s), s.getUpdatedAt(),
                 s.getWhatsappNumber(), s.getDealOfDayProductId(), s.getDealOfDayEndsAt(), s.getGa4Id(), s.getMetaPixelId());
     }
 

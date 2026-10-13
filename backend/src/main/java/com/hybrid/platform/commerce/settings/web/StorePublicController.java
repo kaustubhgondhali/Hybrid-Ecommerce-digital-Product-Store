@@ -41,8 +41,8 @@ public class StorePublicController {
     @GetMapping("/api/{storefront}/catalog/store")
     public StoreInfo store(@PathVariable String storefront) {
         Storefront sf = Storefront.fromPath(storefront);
-        return new StoreInfo(settings.publicInfo(sf, props.currency()), payments.isDemo(), props.affiliateOnly(),
-                content.footer(sf));
+        SettingsService.PublicStoreInfo info = settings.publicInfo(sf, props.currency());
+        return new StoreInfo(info, payments.isDemo(), info.affiliateOnly(), content.footer(sf));
     }
 
     @GetMapping("/api/{storefront}/catalog/states")

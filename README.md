@@ -13,8 +13,15 @@ By default the site is **affiliate-only** (`AFFILIATE_ONLY=true`): products are 
 **no global admin**: a shop admin cannot see or change anything in the digital admin, and vice versa.
 
 The server is authoritative for affiliate link validation, click tracking and admin permissions. The browser only
-displays what the server returns. Set `AFFILIATE_ONLY=false` only if you also want to sell products yourself
-(cart, payments, inventory) on this site.
+displays what the server returns.
+
+**Three selling channels per product:** *Own stock* (`DIRECT`, your inventory), *Dropshipping* (`DROPSHIP`, physical
+only, the supplier ships and your inventory is not used) and *Affiliate* (bought on the partner site). To sell own-stock
+or dropship products, turn on **Settings → Selling channels → Sell on this site** in that storefront's admin. Until an
+admin sets it, `AFFILIATE_ONLY` is the default. With checkout on, the storefront shows every product the same way:
+there are no store names or channel labels, and every product has **Buy now** and **Add to cart**. A partner product's
+Buy now opens the partner checkout, and the cart sends own-stock and dropship items through checkout while partner
+items keep their own Buy now.
 
 **Stack:** Spring Boot 3.5 (Java 21, one application) + MySQL 8 + plain HTML/CSS/JavaScript (no build step).
 
@@ -25,6 +32,7 @@ displays what the server returns. Set `AFFILIATE_ONLY=false` only if you also wa
 | **Affiliate-only mode** (default): partner offers, `/go/{code}` redirects, cart as "saved deals", no checkout | Done |
 | Catalog, categories, images, variants, publish rules | Done |
 | Cart, checkout, stock reservation (optional; off while `AFFILIATE_ONLY=true`) | Available when affiliate-only is disabled |
+| Own stock + dropship + affiliate in one storefront, mixed carts, per-storefront checkout switch | Done (supplier management is next) |
 | Payments | Only needed if you turn off affiliate-only. Demo provider for that path; Razorpay planned. |
 | Orders: cancel, refund (full/partial, optional restock), shipping + tracking, delivered | Done |
 | GST-style invoices with gapless numbering per storefront and year, print / save as PDF | Done |

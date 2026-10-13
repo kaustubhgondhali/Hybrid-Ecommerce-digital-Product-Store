@@ -143,11 +143,13 @@ public class Product {
         updatedAt = Instant.now();
     }
 
-    public boolean isDirect() {
-        return sellingMethod == SellingMethod.DIRECT;
+    /** Priced variants, paid for on this site (own stock or dropship). */
+    public boolean isOnSite() {
+        return sellingMethod.onSite();
     }
 
-    public boolean isPhysicalDirect() {
+    /** Physical goods held in our own inventory. */
+    public boolean isOwnStock() {
         return productType == ProductType.PHYSICAL && sellingMethod == SellingMethod.DIRECT;
     }
 

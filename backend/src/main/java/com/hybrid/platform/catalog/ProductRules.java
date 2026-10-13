@@ -7,8 +7,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Publish-time rules for the four productType x sellingMethod combinations
- * (see docs/PRODUCT-BEHAVIOR-MATRIX.md section 2).
+ * Publish-time rules for the productType x sellingMethod combinations
+ * (see docs/PRODUCT-BEHAVIOR-MATRIX.md section 2). Dropshipping is physical-only.
  */
 public final class ProductRules {
 
@@ -33,7 +33,7 @@ public final class ProductRules {
             problems.add("At least one active variant is required");
         }
 
-        if (p.getSellingMethod() == SellingMethod.DIRECT) {
+        if (p.isOnSite()) {
             for (ProductVariant v : active) {
                 if (v.getPriceMinor() == null || v.getPriceMinor() < MIN_PRICE_MINOR) {
                     problems.add("Variant '" + v.getName() + "' needs a price of at least 1.00");
@@ -51,7 +51,11 @@ public final class ProductRules {
             }
         }
 
-        if (p.getProductType() == ProductType.PHYSICAL && p.getSellingMethod() == SellingMethod.DIRECT) {
+        if (p.getSellingMethod() == SellingMethod.DROPSHIP && p.getProductType() != ProductType.PHYSICAL) {
+            problems.add("Dropshipping is only for physical products");
+        }
+
+        if (p.getProductType() == ProductType.PHYSICAL && p.isOnSite()) {
             for (ProductVariant v : active) {
                 if (v.getSku() == null) {
                     problems.add("Variant '" + v.getName() + "' needs a SKU");
@@ -65,7 +69,7 @@ public final class ProductRules {
         if (p.getProductType() == ProductType.DIGITAL) {
             if (p.getDeliveryKind() == null) {
                 problems.add("Digital products need a delivery type (download and/or license key)");
-            } else if (p.getSellingMethod() == SellingMethod.DIRECT && !ctx.digitalDeliveryReady()) {
+            } else if (p.isOnSite() && !ctx.digitalDeliveryReady()) {
                 problems.add("Upload at least one file and/or import license keys before publishing");
             }
         }

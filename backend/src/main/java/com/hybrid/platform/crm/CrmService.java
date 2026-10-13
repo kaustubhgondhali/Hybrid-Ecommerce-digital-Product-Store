@@ -1,6 +1,6 @@
 package com.hybrid.platform.crm;
 
-import com.hybrid.platform.common.AppProperties;
+import com.hybrid.platform.commerce.settings.SettingsService;
 import com.hybrid.platform.common.PageResponse;
 import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.common.error.ApiException;
@@ -64,16 +64,16 @@ public class CrmService {
     private final CrmRepositories.TaskRepository tasks;
     private final CustomerRepository customers;
     private final MarketingMailer mailer;
-    private final AppProperties props;
+    private final SettingsService storeSettings;
 
     public CrmService(CrmQueries queries, CrmRepositories.NoteRepository notes, CrmRepositories.TaskRepository tasks,
-                      CustomerRepository customers, MarketingMailer mailer, AppProperties props) {
+                      CustomerRepository customers, MarketingMailer mailer, SettingsService storeSettings) {
         this.queries = queries;
         this.notes = notes;
         this.tasks = tasks;
         this.customers = customers;
         this.mailer = mailer;
-        this.props = props;
+        this.storeSettings = storeSettings;
     }
 
     // ------------------------------------------------------------------ overview & segments
@@ -112,7 +112,7 @@ public class CrmService {
         List<TaskView> due = taskViews(tasks.open(sf, PageRequest.of(0, 8)));
         return new Overview(all.size(), newCustomers, counts.get(Segment.SUBSCRIBERS)[0], counts.get(Segment.HOT_LEADS)[0],
                 counts.get(Segment.ABANDONED_CART)[0], abandonedItems, buyers, buyers == 0 ? 0 : (int) Math.round(100.0 * repeat / buyers),
-                tasks.countByStorefrontAndDoneAtIsNull(sf), segments, hot, due, props.affiliateOnly(), mailer.smtpReady(sf));
+                tasks.countByStorefrontAndDoneAtIsNull(sf), segments, hot, due, storeSettings.affiliateOnly(sf), mailer.smtpReady(sf));
     }
 
     public List<SegmentInfo> segmentDefinitions() {
