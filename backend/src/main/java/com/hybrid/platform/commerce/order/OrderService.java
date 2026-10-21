@@ -1,5 +1,6 @@
 package com.hybrid.platform.commerce.order;
 
+import com.hybrid.platform.catalog.CatalogEnums;
 import com.hybrid.platform.common.PageResponse;
 import com.hybrid.platform.common.Storefront;
 import com.hybrid.platform.common.audit.AuditService;
@@ -8,6 +9,7 @@ import com.hybrid.platform.commerce.coupon.CouponService;
 import com.hybrid.platform.commerce.inventory.InventoryService;
 import com.hybrid.platform.commerce.order.OrderRepositories.OrderRepository;
 import com.hybrid.platform.commerce.order.OrderRepositories.ShipmentRepository;
+import com.hybrid.platform.payment.PaymentCallbackService;
 import com.hybrid.platform.payment.PaymentEvents;
 import com.hybrid.platform.payment.PaymentService;
 import com.hybrid.platform.security.AdminPrincipal;
@@ -27,6 +29,7 @@ import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class OrderService {
@@ -79,19 +82,22 @@ public class OrderService {
     private final InventoryService inventory;
     private final InvoiceService invoices;
     private final PaymentService payments;
+    private final PaymentCallbackService paymentCallbacks;
     private final CouponService coupons;
     private final AuditService audit;
     private final ApplicationEventPublisher publisher;
     private final TransactionTemplate tx;
 
     public OrderService(OrderRepository orders, ShipmentRepository shipments, InventoryService inventory,
-                        InvoiceService invoices, PaymentService payments, CouponService coupons, AuditService audit,
+                        InvoiceService invoices, PaymentService payments, PaymentCallbackService paymentCallbacks,
+                        CouponService coupons, AuditService audit,
                         ApplicationEventPublisher publisher, PlatformTransactionManager txManager) {
         this.orders = orders;
         this.shipments = shipments;
         this.inventory = inventory;
         this.invoices = invoices;
         this.payments = payments;
+        this.paymentCallbacks = paymentCallbacks;
         this.coupons = coupons;
         this.audit = audit;
         this.publisher = publisher;
@@ -222,6 +228,16 @@ public class OrderService {
         return payInfo(customer, orderNumber);
     }
 
+    /**
+     * The customer returned from the gateway's checkout. Not transactional: the gateway is called first, then the
+     * outcome is recorded. Accepted even after the order expired, because the money may already have been taken.
+     */
+    public PayInfo confirmPayment(CustomerPrincipal customer, String orderNumber, Map<String, String> params) {
+        CustomerOrder o = owned(customer, orderNumber);
+        paymentCallbacks.confirmCheckoutReturn(o.getId(), params == null ? Map.of() : params);
+        return payInfo(customer, orderNumber);
+    }
+
     /** Demo provider only: simulates the gateway confirming or declining the payment. */
     @Transactional
     public PayInfo completeDemoPayment(CustomerPrincipal customer, String orderNumber, boolean success) {
@@ -247,9 +263,10 @@ public class OrderService {
     // ------------------------------------------------------------------ admin
 
     @Transactional(readOnly = true)
-    public PageResponse<AdminOrderSummary> adminList(Storefront sf, CustomerOrder.Status status, String q, int page, int size) {
+    public PageResponse<AdminOrderSummary> adminList(Storefront sf, CustomerOrder.Status status, String q,
+                                                     CatalogEnums.SellingMethod method, int page, int size) {
         String query = q == null || q.isBlank() ? null : q.trim();
-        return PageResponse.of(orders.search(sf, status, query, PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100))),
+        return PageResponse.of(orders.search(sf, status, query, method, PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100))),
                 o -> new AdminOrderSummary(o.getId(), o.getOrderNumber(), o.getStatus().name(), o.getCustomerName(),
                         o.getCustomerEmail(), o.getTotalMinor(), o.getCurrency(), o.isRequiresShipping(), o.getPlacedAt(),
                         o.getPaymentMethod().name()));

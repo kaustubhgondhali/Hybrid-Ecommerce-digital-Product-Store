@@ -55,11 +55,11 @@ public class PaymentService {
     public PaymentInit start(Long orderId, Storefront sf, long amountMinor, String currency, String receipt) {
         Payment existing = payments.findByOrderId(orderId).orElse(null);
         if (existing != null) {
-            return init(existing, Map.of("mode", provider.isDemo() ? "demo" : "live"));
+            return init(existing);
         }
         PaymentProvider.ProviderOrder po = provider.createOrder(receipt, amountMinor, currency);
         Payment p = payments.save(new Payment(orderId, sf, provider.code(), po.providerOrderId(), amountMinor, currency));
-        return init(p, po.clientParams());
+        return init(p);
     }
 
     /** Cash on delivery: records an unpaid payment that the store marks as collected when the parcel is delivered. */
@@ -84,7 +84,18 @@ public class PaymentService {
 
     @Transactional(readOnly = true)
     public Optional<PaymentInit> currentInit(Long orderId) {
-        return payments.findByOrderId(orderId).map(p -> init(p, Map.of("mode", provider.isDemo() ? "demo" : "live")));
+        return payments.findByOrderId(orderId).map(this::init);
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<Payment> findByOrder(Long orderId) {
+        return payments.findByOrderId(orderId);
+    }
+
+    /** True if the active provider created this provider order (webhooks for other shops on the same account are ignored). */
+    @Transactional(readOnly = true)
+    public boolean knowsProviderOrder(String providerOrderId) {
+        return payments.findByProviderAndProviderOrderId(provider.code(), providerOrderId).isPresent();
     }
 
     /** Called by a verified provider callback (webhook / signature-checked return) or by the demo simulator. */
@@ -154,7 +165,7 @@ public class PaymentService {
         }
         p.setStatus(Payment.Status.CREATED);
         p.setFailureReason(null);
-        return init(p, Map.of("mode", provider.isDemo() ? "demo" : "live"));
+        return init(p);
     }
 
     @Transactional(propagation = Propagation.MANDATORY)
@@ -188,7 +199,10 @@ public class PaymentService {
                 p.getFailureReason(), p.getCreatedAt()));
     }
 
-    private PaymentInit init(Payment p, Map<String, Object> clientParams) {
+    private PaymentInit init(Payment p) {
+        Map<String, Object> clientParams = provider.code().equals(p.getProvider())
+                ? provider.clientParams(p)
+                : Map.of("mode", "unavailable");
         return new PaymentInit(p.getId(), p.getProvider(), provider.isDemo(), p.getProviderOrderId(), p.getAmountMinor(),
                 p.getCurrency(), clientParams);
     }

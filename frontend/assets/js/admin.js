@@ -89,20 +89,58 @@
 
   // ================================================================== shell
 
-  const NAV = [
-    ['dashboard', 'Dashboard', 'DASHBOARD_READ'],
-    ['products', 'Products', 'CATALOG_READ'],
-    ['categories', 'Categories', 'CATALOG_READ'],
-    ['inventory', 'Inventory', 'CATALOG_READ'],
-    ['orders', 'Orders', 'ORDERS_READ'],
-    ['entitlements', 'Digital access', 'ORDERS_READ'],
-    ['affiliate', 'Affiliate', 'AFFILIATE_READ'],
-    ['settings', 'Settings', 'SETTINGS_WRITE'],
-    ['notifications', 'Email log', 'SETTINGS_WRITE'],
-    ['staff', 'Staff', 'STAFF_MANAGE'],
-    ['audit', 'Audit log', 'AUDIT_READ'],
-    ['account', 'My account', null]
+  /** Menu entries: route → [label, permission]. Pages added by other admin scripts register themselves here. */
+  const NAV_ITEMS = {
+    dashboard: ['Dashboard', 'DASHBOARD_READ'],
+    'affiliate-products': ['Affiliate products', 'CATALOG_READ'],
+    'dropship-products': ['Dropship products', 'CATALOG_READ'],
+    'own-products': [SF === 'digital' ? 'My own products' : 'Own-stock products', 'CATALOG_READ'],
+    'dropship-orders': ['Dropship orders', 'ORDERS_READ'],
+    'own-orders': [SF === 'digital' ? 'My product orders' : 'Own-stock orders', 'ORDERS_READ'],
+    products: ['All products', 'CATALOG_READ'],
+    categories: ['Categories', 'CATALOG_READ'],
+    inventory: ['Inventory', 'CATALOG_READ'],
+    orders: ['All orders', 'ORDERS_READ'],
+    entitlements: ['Digital access', 'ORDERS_READ'],
+    affiliate: ['Links & earnings', 'AFFILIATE_READ'],
+    settings: ['Settings', 'SETTINGS_WRITE'],
+    notifications: ['Email log', 'SETTINGS_WRITE'],
+    staff: ['Staff', 'STAFF_MANAGE'],
+    audit: ['Audit log', 'AUDIT_READ'],
+    account: ['My account', null]
+  };
+
+  /** The menu, grouped by business model: Elaashop sells affiliate, dropship and own-stock products; Elaatech
+      sells affiliate products and its own digital products. */
+  const NAV_GROUPS = SF === 'digital' ? [
+    { title: null, items: ['dashboard', 'demand', 'crm'] },
+    { title: '1 · Affiliate products', items: ['affiliate-products', 'import', 'affiliate', 'offers', 'research'] },
+    { title: '2 · My own products', items: ['own-products', 'own-orders', 'entitlements', 'coupons'] },
+    { title: 'Catalog & marketing', items: ['products', 'categories', 'inventory', 'reviews', 'seo', 'studio', 'guides', 'stories', 'pages'] },
+    { title: 'Store & team', items: ['settings', 'notifications', 'staff', 'audit', 'system', 'security', 'account', 'help'] }
+  ] : [
+    { title: null, items: ['dashboard', 'demand', 'crm'] },
+    { title: '1 · Affiliate products', items: ['affiliate-products', 'import', 'affiliate', 'offers', 'research'] },
+    { title: '2 · Dropshipping products', items: ['dropship-products', 'dropship-orders'] },
+    { title: '3 · E-commerce products', items: ['own-products', 'inventory', 'own-orders', 'entitlements', 'coupons'] },
+    { title: 'Catalog & marketing', items: ['products', 'categories', 'reviews', 'seo', 'studio', 'guides', 'stories', 'pages'] },
+    { title: 'Store & team', items: ['settings', 'notifications', 'staff', 'audit', 'system', 'security', 'account', 'help'] }
   ];
+
+  /** Product and order pages for one selling channel. */
+  const CHANNELS = {
+    'affiliate-products': { method: 'AFFILIATE', title: 'Affiliate products', what: 'Partner offers: shoppers click "Buy" and pay on the partner store (Amazon, Flipkart, Udemy…). You earn a commission.' },
+    'dropship-products': { method: 'DROPSHIP', title: 'Dropshipping products', what: 'Shoppers pay on this site and your supplier ships the order. Your own stock is not used.' },
+    'own-products': SF === 'digital'
+      ? { method: 'DIRECT', title: 'My own products', what: 'Products you made and upload yourself (courses, e-books, templates, software, licence keys). Shoppers pay on this site and get them instantly in their library.' }
+      : { method: 'DIRECT', title: 'Own-stock products (e-commerce)', what: 'Products you keep in stock and ship yourself. Shoppers pay on this site.' }
+  };
+  const ORDER_CHANNELS = {
+    'dropship-orders': { method: 'DROPSHIP', title: 'Dropship orders', what: 'Orders with at least one dropship item. Send these to your supplier.' },
+    'own-orders': { method: 'DIRECT', title: SF === 'digital' ? 'My product orders' : 'Own-stock orders', what: SF === 'digital'
+      ? 'Orders for your own digital products. Delivery to the customer’s library is automatic.'
+      : 'Orders with at least one own-stock item. Pack and ship these yourself.' }
+  };
 
   async function app() {
     // Coming back with the browser's Back button after signing out must not show the old panel from memory.
@@ -129,8 +167,15 @@
       await Api.post(API + '/auth/logout').catch(() => null);
       location.href = '/' + SF + '/admin/login';
     });
-    const nav = el('nav', null, NAV.filter(([, , perm]) => !perm || can(perm))
-      .map(([route, label]) => el('a', { href: '#/' + route, dataset: { route }, text: label })));
+    const placed = new Set(NAV_GROUPS.flatMap((g) => g.items));
+    const groups = NAV_GROUPS.map((g, i) => ({ title: g.title,
+      items: i === NAV_GROUPS.length - 1 ? [...g.items, ...Object.keys(NAV_ITEMS).filter((r) => !placed.has(r))] : g.items }));
+    const nav = el('nav', null, groups.map((g) => {
+      const links = g.items.filter((r) => NAV_ITEMS[r] && ROUTES[r] && (!NAV_ITEMS[r][1] || can(NAV_ITEMS[r][1])))
+        .map((route) => el('a', { href: '#/' + route, dataset: { route }, text: NAV_ITEMS[route][0] }));
+      if (!links.length) return null;
+      return el('div', { class: 'nav-group' }, g.title ? el('div', { class: 'nav-group-title', text: g.title }) : null, links);
+    }));
     mount(document.getElementById('main'),
       el('aside', { class: 'admin-sidebar no-print' },
         el('a', { class: 'brand', href: '#/dashboard', 'aria-label': SF_NAME + ' admin dashboard' },
@@ -202,6 +247,9 @@
     audit: auditView,
     account: accountView
   };
+  Object.keys(CHANNELS).forEach((base) => { ROUTES[base] = (parts) => productsRoute(parts, base); });
+  Object.keys(ORDER_CHANNELS).forEach((base) => { ROUTES[base] = (parts) => ordersRoute(parts, base); });
+  if (SF === 'digital') ['dropship-products', 'dropship-orders'].forEach((r) => { delete ROUTES[r]; });
 
   async function route() {
     const parts = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/');
@@ -301,67 +349,95 @@
       el('div', { class: 'card' }, el('h2', { text: 'Recent orders' }), ordersTable(d.recentOrders)));
   }
 
-  function ordersTable(orders) {
+  function ordersTable(orders, base) {
+    const b = base || 'orders';
     return table(['Order', 'Customer', 'Placed', 'Status', el('th', { class: 'num', text: 'Total' })], orders.map((o) => {
       const tr = el('tr', { class: 'clickable' },
-        el('td', null, el('a', { href: '#/orders/' + o.id, text: o.orderNumber })),
+        el('td', null, el('a', { href: '#/' + b + '/' + o.id, text: o.orderNumber })),
         el('td', null, el('div', { text: o.customerName }), el('div', { class: 'muted small', text: o.customerEmail })),
         el('td', { text: UI.date(o.placedAt) }),
         el('td', null, UI.badge(o.status), o.paymentMethod === 'COD' ? [' ', el('span', { class: 'badge purple', text: 'COD' })] : null),
         el('td', { class: 'num', text: money(o.totalMinor, o.currency) }));
-      tr.addEventListener('click', () => { location.hash = '#/orders/' + o.id; });
+      tr.addEventListener('click', () => { location.hash = '#/' + b + '/' + o.id; });
       return tr;
     }), 'No orders yet.');
   }
 
   // ================================================================== products
 
-  const productFilters = { q: '', status: '', type: '', method: '', page: 0 };
+  const productFilters = {};
 
-  function productsRoute(parts) {
-    if (parts[0] === 'new') return productNewView();
-    if (parts[0]) return productEditView(parts[0]);
-    return productListView();
+  /** {@code base} is the menu route: "products" (all channels) or one channel's page, e.g. "affiliate-products". */
+  function productsRoute(parts, base) {
+    const b = base || 'products';
+    if (parts[0] === 'new') return productNewView(b);
+    if (parts[0]) return productEditView(parts[0], b);
+    return productListView(b);
   }
 
-  async function productListView() {
-    const f = productFilters;
+  /** Explains why own-stock and dropship products cannot be added while the store is affiliate-only. */
+  function checkoutOffNotice(method) {
+    if (method === 'AFFILIATE' || !(window.AdminKit && window.AdminKit.affiliateOnly)) return null;
+    return el('div', { class: 'alert warning' }, 'Selling on this site is turned off, so these products cannot be bought yet. ',
+      can('SETTINGS_WRITE') ? el('a', { href: '#/settings', text: 'Turn on Settings → Selling channels → Sell on this site' }) : 'Ask a master admin to turn on Settings → Selling channels.',
+      ' to add and sell them.');
+  }
+
+  async function productListView(base) {
+    const b = base || 'products';
+    const channel = CHANNELS[b];
+    const f = productFilters[b] || (productFilters[b] = { q: '', status: '', type: '', method: '', page: 0 });
     const qs = new URLSearchParams({ page: String(f.page), size: '25' });
     ['q', 'status', 'type', 'method'].forEach((k) => { if (f[k]) qs.set(k, f[k]); });
+    if (channel) qs.set('method', channel.method);
     const result = await Api.get(API + '/products?' + qs.toString());
     const filters = el('form', { class: 'filters' },
       input('q', { type: 'search', placeholder: 'Search title or SKU', value: f.q }),
       selectEl('status', [['', 'Any status'], 'DRAFT', 'PUBLISHED', 'ARCHIVED'], f.status),
-      selectEl('type', [['', 'Any type'], 'PHYSICAL', 'DIGITAL'], f.type),
-      selectEl('method', [['', 'Any channel'], ...Object.keys(METHODS).map((m) => [m, METHODS[m].label])], f.method),
+      SF === 'shop' && !(channel && channel.method === 'DROPSHIP') ? selectEl('type', [['', 'Any type'], 'PHYSICAL', 'DIGITAL'], f.type) : null,
+      channel ? null : selectEl('method', [['', 'Any channel'], ...Object.keys(METHODS).map((m) => [m, METHODS[m].label])], f.method),
       el('button', { class: 'btn secondary', type: 'submit', text: 'Filter' }));
     filters.addEventListener('submit', (e) => {
       e.preventDefault();
-      Object.assign(productFilters, UI.formValues(filters), { page: 0 });
-      productListView().catch((err) => mount(view(), UI.errorAlert(err)));
+      Object.assign(f, UI.formValues(filters), { page: 0 });
+      productListView(b).catch((err) => mount(view(), UI.errorAlert(err)));
     });
     const rows = result.items.map((p) => {
       const tr = el('tr', { class: 'clickable' },
         el('td', null, p.imageUrl ? el('img', { class: 'thumb-sm', src: p.imageUrl, alt: '', loading: 'lazy', decoding: 'async' }) : el('div', { class: 'thumb-sm' })),
-        el('td', null, el('a', { href: '#/products/' + p.id, text: p.title }), el('div', { class: 'muted small', text: p.slug })),
+        el('td', null, el('a', { href: '#/' + b + '/' + p.id, text: p.title }), el('div', { class: 'muted small', text: p.slug })),
         el('td', null, el('span', { class: 'badge', text: UI.label(p.productType) }), ' ', methodBadge(p.sellingMethod)),
         el('td', null, UI.badge(p.status)),
         el('td', { class: 'num', text: p.priceMinor != null ? money(p.priceMinor) : '\u2014' }),
         el('td', { class: 'muted small', text: UI.date(p.updatedAt) }));
-      tr.addEventListener('click', (e) => { if (e.target.tagName !== 'A') location.hash = '#/products/' + p.id; });
+      tr.addEventListener('click', (e) => { if (e.target.tagName !== 'A') location.hash = '#/' + b + '/' + p.id; });
       return tr;
     });
-    mount(view(), head('Products', can('CATALOG_WRITE') ? el('a', { class: 'btn', href: '#/products/new', text: 'New product' }) : null),
+    const notice = channel ? checkoutOffNotice(channel.method) : null;
+    const canAdd = can('CATALOG_WRITE') && !notice;
+    mount(view(), head(channel ? channel.title : 'All products',
+      canAdd ? el('a', { class: 'btn', href: '#/' + b + '/new', text: channel ? 'New ' + METHODS[channel.method].label.toLowerCase() + ' product' : 'New product' }) : null),
+      channel ? el('p', { class: 'muted', text: channel.what }) : el('p', { class: 'muted', text: 'Every product of every channel. Use the menu sections to work with one channel at a time.' }),
+      notice,
       filters,
-      el('div', { class: 'card' }, table(['', 'Product', 'Type', 'Status', el('th', { class: 'num', text: 'Price' }), 'Updated'], rows, 'No products match.'),
-        pager(result, (page) => { productFilters.page = page; productListView(); })));
+      el('div', { class: 'card' }, table(['', 'Product', 'Type', 'Status', el('th', { class: 'num', text: 'Price' }), 'Updated'], rows, 'No products here yet.'),
+        pager(result, (page) => { f.page = page; productListView(b); })));
   }
 
-  async function productNewView() {
+  async function productNewView(base) {
+    const b = base || 'products';
+    const channel = CHANNELS[b];
+    const notice = channel ? checkoutOffNotice(channel.method) : null;
+    if (notice) {
+      mount(view(), el('p', { class: 'small' }, el('a', { href: '#/' + b, text: '\u2190 ' + channel.title })), head('New product'), notice);
+      return;
+    }
     const categories = await Api.get(API + '/categories');
-    const type = selectEl('productType', [['PHYSICAL', 'Physical product'], ['DIGITAL', 'Digital product']], SF === 'digital' ? 'DIGITAL' : 'PHYSICAL');
+    const preset = channel ? channel.method : null;
+    const type = selectEl('productType', [['PHYSICAL', 'Physical product'], ['DIGITAL', 'Digital product']],
+      SF === 'digital' ? 'DIGITAL' : 'PHYSICAL', { disabled: preset === 'DROPSHIP' });
     const affiliateOnly = !!(window.AdminKit && window.AdminKit.affiliateOnly);
-    const method = selectEl('sellingMethod', methodOptions(type.value), affiliateOnly ? 'AFFILIATE' : 'DIRECT');
+    const method = selectEl('sellingMethod', methodOptions(type.value), preset || (affiliateOnly ? 'AFFILIATE' : 'DIRECT'), { disabled: !!preset });
     const priceRow = el('div', { class: 'row' },
       UI.field('Price (\u20B9)', input('price', { inputmode: 'decimal', placeholder: '499.00' })),
       UI.field('Compare-at price (\u20B9, optional)', input('compareAt', { inputmode: 'decimal' })));
@@ -393,28 +469,33 @@
       el('p', { class: 'muted small', text: affiliateOnly
         ? 'Created as a draft affiliate offer. Add images and the partner link next, then publish. Shoppers will leave this site to buy.'
         : 'The product is created as a draft. Add images, stock, files or the affiliate link next, then publish. Shoppers see every product the same way, whatever the channel.' }),
-      el('div', { class: 'actions' }, el('button', { class: 'btn', type: 'submit', text: 'Create draft' }), el('a', { href: '#/products', text: 'Cancel' })));
+      el('div', { class: 'actions' }, el('button', { class: 'btn', type: 'submit', text: 'Create draft' }), el('a', { href: '#/' + b, text: 'Cancel' })));
     onSubmit(form, async (v) => {
-      const direct = onSiteMethod(v.sellingMethod);
+      const productType = type.value;
+      const sellingMethod = method.value;
+      const direct = onSiteMethod(sellingMethod);
       const body = {
-        productType: v.productType, sellingMethod: v.sellingMethod, title: v.title, summary: v.summary || null,
+        productType, sellingMethod, title: v.title, summary: v.summary || null,
         brand: v.brand || null, categoryId: v.categoryId ? Number(v.categoryId) : null,
         priceMinor: direct ? minorOrNull(v.price) : null, compareAtMinor: direct ? minorOrNull(v.compareAt) : null,
-        sku: direct && v.productType === 'PHYSICAL' ? (v.sku || null) : null,
-        weightGrams: direct && v.productType === 'PHYSICAL' ? intOrNull(v.weightGrams) : null,
-        deliveryKind: v.productType === 'DIGITAL' ? v.deliveryKind : null,
-        digitalFormat: v.productType === 'DIGITAL' ? (v.digitalFormat || null) : null
+        sku: direct && productType === 'PHYSICAL' ? (v.sku || null) : null,
+        weightGrams: direct && productType === 'PHYSICAL' ? intOrNull(v.weightGrams) : null,
+        deliveryKind: productType === 'DIGITAL' ? v.deliveryKind : null,
+        digitalFormat: productType === 'DIGITAL' ? (v.digitalFormat || null) : null
       };
       const p = await Api.post(API + '/products', body);
-      location.hash = '#/products/' + p.id;
+      location.hash = '#/' + b + '/' + p.id;
     });
-    mount(view(), head('New product'), form);
+    mount(view(), el('p', { class: 'small' }, el('a', { href: '#/' + b, text: '\u2190 ' + (channel ? channel.title : 'All products') })),
+      head(channel ? 'New ' + METHODS[channel.method].label.toLowerCase() + ' product' : 'New product'),
+      channel ? el('p', { class: 'muted', text: channel.what }) : null, form);
   }
 
-  async function productEditView(id) {
+  async function productEditView(id, base) {
+    const b = base || 'products';
     const [p, categories] = await Promise.all([Api.get(API + '/products/' + id), Api.get(API + '/categories')]);
     const writable = can('CATALOG_WRITE');
-    const refresh = () => productEditView(id).catch((e) => mount(view(), UI.errorAlert(e)));
+    const refresh = () => productEditView(id, b).catch((e) => mount(view(), UI.errorAlert(e)));
 
     // status actions
     const statusMsg = el('div');
@@ -435,7 +516,7 @@
     ] : [];
 
     const header = el('div', null,
-      el('p', { class: 'small' }, el('a', { href: '#/products', text: '\u2190 Products' })),
+      el('p', { class: 'small' }, el('a', { href: '#/' + b, text: '\u2190 ' + (CHANNELS[b] ? CHANNELS[b].title : 'All products') })),
       head(p.title, p.status === 'PUBLISHED' ? el('a', { class: 'btn ghost', href: '/' + SF + '/p/' + encodeURIComponent(p.slug), target: '_blank', rel: 'noopener', text: 'View in store' }) : null, actions),
       el('div', { class: 'actions mb' }, UI.badge(p.status), el('span', { class: 'badge', text: UI.label(p.productType) }),
         methodBadge(p.sellingMethod),
@@ -1056,19 +1137,23 @@
 
   // ================================================================== orders
 
-  const orderFilters = { status: '', q: '', page: 0 };
+  const orderFiltersByBase = {};
 
-  function ordersRoute(parts) {
-    if (parts[0] && parts[1] === 'invoice') return orderInvoiceView(parts[0]);
-    if (parts[0]) return orderDetailView(parts[0]);
-    return orderListView();
+  function ordersRoute(parts, base) {
+    const b = base || 'orders';
+    if (parts[0] && parts[1] === 'invoice') return orderInvoiceView(parts[0], b);
+    if (parts[0]) return orderDetailView(parts[0], b);
+    return orderListView(b);
   }
 
-  async function orderListView() {
-    const f = orderFilters;
+  async function orderListView(base) {
+    const b = base || 'orders';
+    const channel = ORDER_CHANNELS[b];
+    const f = orderFiltersByBase[b] || (orderFiltersByBase[b] = { status: '', q: '', page: 0 });
     const qs = new URLSearchParams({ page: String(f.page), size: '25' });
     if (f.status) qs.set('status', f.status);
     if (f.q) qs.set('q', f.q);
+    if (channel) qs.set('method', channel.method);
     const result = await Api.get(API + '/orders?' + qs.toString());
     const filters = el('form', { class: 'filters' },
       input('q', { type: 'search', placeholder: 'Order number, email or name', value: f.q }),
@@ -1076,18 +1161,20 @@
       el('button', { class: 'btn secondary', type: 'submit', text: 'Filter' }));
     filters.addEventListener('submit', (e) => {
       e.preventDefault();
-      Object.assign(orderFilters, UI.formValues(filters), { page: 0 });
-      orderListView();
+      Object.assign(f, UI.formValues(filters), { page: 0 });
+      orderListView(b);
     });
-    mount(view(), head('Orders'), filters,
-      el('div', { class: 'card' }, ordersTable(result.items), pager(result, (page) => { orderFilters.page = page; orderListView(); })));
+    mount(view(), head(channel ? channel.title : 'All orders'),
+      channel ? el('p', { class: 'muted', text: channel.what }) : null, filters,
+      el('div', { class: 'card' }, ordersTable(result.items, b), pager(result, (page) => { f.page = page; orderListView(b); })));
   }
 
-  async function orderDetailView(id) {
+  async function orderDetailView(id, base) {
+    const b = base || 'orders';
     const d = await Api.get(API + '/orders/' + id);
     const o = d.order;
     const a = o.shippingAddress;
-    const refresh = () => orderDetailView(id).catch((e) => mount(view(), UI.errorAlert(e)));
+    const refresh = () => orderDetailView(id, b).catch((e) => mount(view(), UI.errorAlert(e)));
     const writable = can('ORDERS_WRITE');
 
     const lines = table(['Item', 'SKU', 'Type', 'Status', el('th', { class: 'num', text: 'Qty' }), el('th', { class: 'num', text: 'Unit' }), el('th', { class: 'num', text: 'Total' })],
@@ -1114,7 +1201,7 @@
         d.payment.providerPaymentId ? el('div', { class: 'muted', text: 'Ref: ' + d.payment.providerPaymentId }) : null,
         d.payment.refundedMinor ? el('div', { text: 'Refunded: ' + money(d.payment.refundedMinor, o.currency) }) : null,
         d.payment.failureReason ? el('div', { class: 'muted', text: 'Last failure: ' + d.payment.failureReason }) : null) : null,
-      o.invoiceNumber ? el('a', { class: 'btn secondary block mt', href: '#/orders/' + id + '/invoice', text: 'Invoice ' + o.invoiceNumber }) : null);
+      o.invoiceNumber ? el('a', { class: 'btn secondary block mt', href: '#/' + b + '/' + id + '/invoice', text: 'Invoice ' + o.invoiceNumber }) : null);
 
     const customer = el('div', { class: 'card' }, el('h3', { text: 'Customer' }),
       el('div', { text: d.customerName }), el('div', null, el('a', { href: 'mailto:' + d.customerEmail, text: d.customerEmail })),
@@ -1179,7 +1266,7 @@
     }
 
     mount(view(),
-      el('p', { class: 'small' }, el('a', { href: '#/orders', text: '\u2190 Orders' })),
+      el('p', { class: 'small' }, el('a', { href: '#/' + b, text: '\u2190 ' + (ORDER_CHANNELS[b] ? ORDER_CHANNELS[b].title : 'All orders') })),
       head('Order ' + o.orderNumber, UI.badge(o.status)),
       el('p', { class: 'muted', text: 'Placed ' + UI.date(o.placedAt) + (o.paidAt ? ' \u00B7 paid ' + UI.date(o.paidAt) : '') + (o.expiresAt && o.status === 'PENDING_PAYMENT' ? ' \u00B7 payment window ends ' + UI.date(o.expiresAt) : '') }),
       o.status === 'NEEDS_ATTENTION' ? el('div', { class: 'alert error', text: 'Payment arrived after the order expired and the stock was no longer available (or the amount did not match). Refund the customer or contact them.' }) : null,
@@ -1190,9 +1277,9 @@
     return el('div', { class: 'summary-row' }, el('span', { text: label }), el('span', { text: value }));
   }
 
-  async function orderInvoiceView(id) {
+  async function orderInvoiceView(id, base) {
     const inv = await Api.get(API + '/orders/' + id + '/invoice');
-    Invoice.render(view(), inv, '#/orders/' + id, 'Back to order');
+    Invoice.render(view(), inv, '#/' + (base || 'orders') + '/' + id, 'Back to order');
   }
 
   // ================================================================== entitlements
@@ -1626,10 +1713,10 @@
   window.AdminKit = {
     SF, SF_NAME, API, GST_RATES, can, view, head, table, pager, onSubmit, input, selectEl, minorOrNull, intOrNull,
     stat, kvRow, handleAuthError, navBadge, inspectVideo, affiliateOnly: true,
-    register(route, label, perm, fn, after) {
+    /** Adds a page; its place in the menu comes from NAV_GROUPS (pages not listed there go in the last group). */
+    register(route, label, perm, fn) {
       ROUTES[route] = fn;
-      const i = NAV.findIndex((n) => n[0] === after);
-      NAV.splice(i < 0 ? NAV.length - 1 : i + 1, 0, [route, label, perm]);
+      NAV_ITEMS[route] = [label, perm];
     }
   };
 })();

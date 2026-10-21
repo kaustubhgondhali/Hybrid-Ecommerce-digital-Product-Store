@@ -92,6 +92,10 @@ app:
     enabled: ${RATE_LIMIT_ENABLED:true}
   payment:
     provider: ${PAYMENT_PROVIDER:demo}
+    razorpay:
+      key-id: ${RAZORPAY_KEY_ID:}
+      key-secret: ${RAZORPAY_KEY_SECRET:}
+      webhook-secret: ${RAZORPAY_WEBHOOK_SECRET:}
   mail:
     log-unsent-emails: false
   bootstrap:

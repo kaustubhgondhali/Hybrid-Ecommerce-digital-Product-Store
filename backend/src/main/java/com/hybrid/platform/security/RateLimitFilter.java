@@ -40,6 +40,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
             post("^/api/auth/verify-email/resend$", "verify-resend", 5, Duration.ofMinutes(30)),
             post("^/api/auth/(password-reset/confirm|verify-email)$", "token-confirm", 20, Duration.ofMinutes(15)),
             post("^/api/(shop|digital)/checkout/orders$", "place-order", 20, Duration.ofMinutes(10)),
+            post("^/api/orders/[^/]+/payment/confirm$", "payment-confirm", 30, Duration.ofMinutes(10)),
             post("^/api/(shop|digital)/checkout/coupon$", "coupon-check", 30, Duration.ofMinutes(10)),
             post("^/api/(shop|digital)/checkout/quote$", "checkout-quote", 120, Duration.ofMinutes(10)),
             post("^/api/(shop|digital)/catalog/products/[^/]+/reviews$", "review", 10, Duration.ofHours(1)),

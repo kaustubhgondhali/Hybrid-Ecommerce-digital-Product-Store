@@ -1449,8 +1449,10 @@
 
   // ------------------------------------------------------------------ payment
 
+  let payer = null;
+
   async function payPage({ sf }) {
-    await Site.requireCustomer();
+    payer = await Site.requireCustomer();
     document.title = 'Payment';
     const orderNumber = decodeURIComponent(location.pathname.split('/pay/')[1] || '');
     const info = await Api.get('/api/orders/' + encodeURIComponent(orderNumber) + '/payment');
@@ -1484,10 +1486,18 @@
         try { renderPay(sf, await Api.post('/api/orders/' + encodeURIComponent(info.orderNumber) + '/payment/retry')); } catch (e) { mount(msg, UI.errorAlert(e)); }
       }));
       card.appendChild(retry);
+    } else if (info.payment && info.payment.clientParams && info.payment.clientParams.mode === 'razorpay') {
+      if (info.expiresAt) card.appendChild(el('p', { class: 'muted small', text: 'Stock is held for you until ' + UI.date(info.expiresAt) + '.' }));
+      const pay = el('button', { class: 'btn', type: 'button', text: 'Pay ' + money(info.totalMinor, info.currency) });
+      pay.addEventListener('click', () => UI.busy(pay, async () => {
+        try { await openRazorpay(sf, info, msg); } catch (e) { mount(msg, UI.errorAlert(e)); }
+      }));
+      card.appendChild(el('div', { class: 'actions' }, pay));
+      card.appendChild(el('p', { class: 'muted small', text: 'Secure payment by Razorpay: UPI, cards, net banking and wallets.' }));
     } else if (info.demo) {
       card.appendChild(el('div', { class: 'demo-banner' },
         el('strong', { text: 'Demo payment mode. ' }),
-        'No real money is charged. Razorpay will replace this screen once it is configured.'));
+        'No real money is charged. Set PAYMENT_PROVIDER=razorpay to take real payments.'));
       if (info.expiresAt) card.appendChild(el('p', { class: 'muted small', text: 'Stock is held for you until ' + UI.date(info.expiresAt) + '.' }));
       const ok = el('button', { class: 'btn', type: 'button', text: 'Simulate successful payment' });
       const fail = el('button', { class: 'btn secondary', type: 'button', text: 'Simulate failed payment' });
@@ -1503,5 +1513,65 @@
       card.appendChild(el('div', { class: 'alert info', text: 'Online payment is being set up. Please contact the store to complete this order.' }));
     }
     mount(main(), el('div', { class: 'container' }, card));
+  }
+
+  let razorpayScript = null;
+  function loadRazorpay() {
+    if (window.Razorpay) return Promise.resolve();
+    if (!razorpayScript) {
+      razorpayScript = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://checkout.razorpay.com/v1/checkout.js';
+        s.onload = () => resolve();
+        s.onerror = () => { razorpayScript = null; reject(new Error('Could not load Razorpay. Check your connection and try again.')); };
+        document.head.appendChild(s);
+      });
+    }
+    return razorpayScript;
+  }
+
+  /** Resolves when the Razorpay window closes. The server decides whether the payment counts. */
+  async function openRazorpay(sf, info, msg) {
+    await loadRazorpay();
+    const p = info.payment.clientParams;
+    const paymentUrl = '/api/orders/' + encodeURIComponent(info.orderNumber) + '/payment';
+    return new Promise((resolve) => {
+      const rzp = new window.Razorpay({
+        key: p.key,
+        order_id: p.orderId,
+        amount: p.amount,
+        currency: p.currency,
+        name: Site.STOREFRONTS[sf] || 'Store',
+        description: 'Order ' + info.orderNumber,
+        prefill: payer ? { name: payer.name || payer.displayName || '', email: payer.email || '' } : {},
+        modal: { confirm_close: true, ondismiss: () => resolve() },
+        handler: async (r) => {
+          mount(msg, el('div', { class: 'alert info', text: 'Confirming your payment…' }));
+          try {
+            let result = await Api.post(paymentUrl + '/confirm', {
+              razorpay_order_id: r.razorpay_order_id,
+              razorpay_payment_id: r.razorpay_payment_id,
+              razorpay_signature: r.razorpay_signature
+            });
+            // The bank can take a few seconds to finish; the webhook completes the order if this page gives up.
+            for (let i = 0; i < 10 && result.status === 'PENDING_PAYMENT' && result.paymentStatus !== 'FAILED'; i++) {
+              await new Promise((done) => setTimeout(done, 3000));
+              result = await Api.get(paymentUrl);
+            }
+            if (result.status === 'PENDING_PAYMENT' && result.paymentStatus !== 'FAILED') {
+              mount(msg, el('div', { class: 'alert info', text: 'Your bank is still confirming the payment. Please do not pay again; check your order in a few minutes.' }));
+            } else {
+              renderPay(sf, result);
+            }
+          } catch (e) { mount(msg, UI.errorAlert(e)); }
+          resolve();
+        }
+      });
+      rzp.on('payment.failed', (r) => {
+        const reason = (r && r.error && r.error.description) || 'declined';
+        mount(msg, el('div', { class: 'alert error', text: 'Payment failed: ' + reason + '. You can try again.' }));
+      });
+      rzp.open();
+    });
   }
 })();

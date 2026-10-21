@@ -1,5 +1,6 @@
 package com.hybrid.platform.commerce.web;
 
+import com.hybrid.platform.catalog.CatalogEnums.SellingMethod;
 import com.hybrid.platform.common.AppProperties;
 import com.hybrid.platform.common.PageResponse;
 import com.hybrid.platform.common.Storefront;
@@ -51,11 +52,12 @@ public class OrderAdminController {
     public PageResponse<OrderService.AdminOrderSummary> list(@PathVariable String storefront,
                                                              @RequestParam(required = false) CustomerOrder.Status status,
                                                              @RequestParam(required = false) String q,
+                                                             @RequestParam(required = false) SellingMethod method,
                                                              @RequestParam(defaultValue = "0") int page,
                                                              @RequestParam(defaultValue = "25") int size) {
         Storefront sf = Storefront.fromPath(storefront);
         CurrentUser.admin(sf);
-        return orders.adminList(sf, status, q, page, size);
+        return orders.adminList(sf, status, q, method, page, size);
     }
 
     @GetMapping("/orders/{id}")

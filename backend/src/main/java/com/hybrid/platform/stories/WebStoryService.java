@@ -72,6 +72,13 @@ public class WebStoryService {
     public record FromProductsInput(String title, String description, List<Long> productIds, Boolean publish) {
     }
 
+    /** One page of a single-product story; the product's photos are used in turn. */
+    public record PageText(String headline, String body, String ctaLabel) {
+    }
+
+    public record FromProductInput(Long productId, String title, String description, List<PageText> pages, Boolean publish) {
+    }
+
     /** A rendered story page plus whether search engines may index it. */
     public record Rendered(String html, boolean preview) {
     }
@@ -350,6 +357,64 @@ public class WebStoryService {
         stories.save(s);
         if (Boolean.TRUE.equals(in.publish()) && problems(s).isEmpty()) s.publish();
         audit.record(admin, "STORY_FROM_PRODUCTS", "WebStory", s.getId(), title);
+        return view(s);
+    }
+
+    /**
+     * Builds a story about one published product: its first photo becomes the cover and each page uses the next photo
+     * (repeating when there are fewer photos than pages), every page linking to the product.
+     */
+    @Transactional
+    public AdminStoryView fromProduct(AdminPrincipal admin, FromProductInput in) throws IOException {
+        Storefront sf = admin.storefront();
+        String title = title(cut(in.title(), 90));
+        Product p = products.findByIdAndStorefront(in.productId(), sf)
+                .orElseThrow(() -> ApiException.notFound("PRODUCT_NOT_FOUND", "Product not found"));
+        if (p.getStatus() != ProductStatus.PUBLISHED) {
+            throw ApiException.rule("PRODUCT_NOT_PUBLISHED", "“" + p.getTitle() + "” is not published yet");
+        }
+        if (p.getImages().isEmpty()) throw ApiException.rule("PRODUCT_HAS_NO_IMAGE", "“" + p.getTitle() + "” has no photo");
+        List<PageText> texts = in.pages() == null ? List.of() : in.pages().stream().filter(Objects::nonNull).limit(10).toList();
+        if (texts.size() < MIN_PAGES) throw ApiException.badRequest("CHOOSE_PAGES", "A story needs at least " + MIN_PAGES + " pages");
+
+        WebStory s = new WebStory(sf, uniqueSlug(sf, title, null), title);
+        s.setDescription(cut(in.description(), 300));
+        List<String> created = new ArrayList<>();
+        try {
+            for (int i = 0; i < texts.size(); i++) {
+                ProductImage img = p.getImages().get(i % p.getImages().size());
+                String source = img.getLargeKey() != null ? img.getLargeKey() : img.getStorageKey();
+                if (s.getCoverKey() == null) {
+                    BufferedImage decoded = images.read(source);
+                    if (decoded != null) {
+                        s.setCoverKey(images.storeCover(decoded));
+                        created.add(s.getCoverKey());
+                    }
+                }
+                FileStorage.StoredFile copy = images.copy(source, MAX_IMAGE_BYTES * 2);
+                created.add(copy.key());
+                Integer w = img.getWidth();
+                Integer h = img.getHeight();
+                if (w != null && h != null && img.getLargeKey() != null && w > 1200) {
+                    h = Math.round(h * (1200f / w));
+                    w = 1200;
+                }
+                PageText t = texts.get(i);
+                WebStoryPage page = new WebStoryPage(WebStoryPage.MediaType.IMAGE, copy.key(), null, w, h);
+                page.setHeadline(cut(t.headline(), 90));
+                page.setBody(cut(t.body(), 250));
+                page.setAltText(cut(img.getAltText() != null ? img.getAltText() : p.getTitle(), 200));
+                page.setProductId(p.getId());
+                page.setCtaLabel(cut(t.ctaLabel() != null ? t.ctaLabel() : "See the deal", 40));
+                s.addPage(page);
+            }
+        } catch (IOException | RuntimeException e) {
+            created.forEach(k -> storage.delete(FileStorage.Area.PUBLIC, k));
+            throw e;
+        }
+        stories.save(s);
+        if (Boolean.TRUE.equals(in.publish()) && problems(s).isEmpty()) s.publish();
+        audit.record(admin, "STORY_FROM_PRODUCT", "WebStory", s.getId(), title);
         return view(s);
     }
 

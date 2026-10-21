@@ -11,6 +11,8 @@ import jakarta.validation.constraints.NotNull;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @RestController
 public class CustomerOrderController {
 
@@ -73,6 +75,12 @@ public class CustomerOrderController {
     @PostMapping("/api/orders/{orderNumber}/payment/retry")
     public OrderService.PayInfo retry(@PathVariable String orderNumber) {
         return orders.retryPayment(CurrentUser.customer(), orderNumber);
+    }
+
+    /** The values the gateway's checkout returned to the browser; verified against the gateway before use. */
+    @PostMapping("/api/orders/{orderNumber}/payment/confirm")
+    public OrderService.PayInfo confirm(@PathVariable String orderNumber, @RequestBody Map<String, String> req) {
+        return orders.confirmPayment(CurrentUser.customer(), orderNumber, req);
     }
 
     /** Only exists while the demo payment provider is active; returns 404 otherwise. */

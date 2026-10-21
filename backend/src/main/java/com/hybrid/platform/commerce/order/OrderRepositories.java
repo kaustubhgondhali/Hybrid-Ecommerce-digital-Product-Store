@@ -1,5 +1,6 @@
 package com.hybrid.platform.commerce.order;
 
+import com.hybrid.platform.catalog.CatalogEnums.SellingMethod;
 import com.hybrid.platform.common.Storefront;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -42,10 +43,11 @@ public final class OrderRepositories {
                   and (:q is null or lower(o.orderNumber) like lower(concat('%', :q, '%'))
                        or lower(o.customerEmail) like lower(concat('%', :q, '%'))
                        or lower(o.customerName) like lower(concat('%', :q, '%')))
+                  and (:method is null or exists (select l.id from OrderLine l where l.order = o and l.sellingMethod = :method))
                 order by o.placedAt desc
                 """)
         Page<CustomerOrder> search(@Param("sf") Storefront sf, @Param("status") CustomerOrder.Status status,
-                                   @Param("q") String q, Pageable pageable);
+                                   @Param("q") String q, @Param("method") SellingMethod method, Pageable pageable);
 
         @Query("select o.id from CustomerOrder o where o.status = :status and o.expiresAt < :now order by o.id")
         List<Long> findIdsByStatusExpiringBefore(@Param("status") CustomerOrder.Status status, @Param("now") Instant now,

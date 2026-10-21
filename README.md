@@ -33,7 +33,7 @@ items keep their own Buy now.
 | Catalog, categories, images, variants, publish rules | Done |
 | Cart, checkout, stock reservation (optional; off while `AFFILIATE_ONLY=true`) | Available when affiliate-only is disabled |
 | Own stock + dropship + affiliate in one storefront, mixed carts, per-storefront checkout switch | Done (supplier management is next) |
-| Payments | Only needed if you turn off affiliate-only. Demo provider for that path; Razorpay planned. |
+| Payments | Only needed if you turn off affiliate-only. Razorpay (UPI, cards, net banking, wallets) with signed confirmation, webhooks and refunds; demo provider for development. |
 | Orders: cancel, refund (full/partial, optional restock), shipping + tracking, delivered | Done |
 | GST-style invoices with gapless numbering per storefront and year, print / save as PDF | Done |
 | Digital delivery: files (signed short-lived download links), license keys, customer library | Done |
@@ -51,6 +51,7 @@ items keep their own Buy now.
 | **Coupons & offers** (`/{store}/offers`) and a page per partner store (`/{store}/store/{domain}`); "Copy code & go" through a tracked link; Deal of the Day with countdown; price-drop alerts and newsletter (both confirmed by email); WhatsApp chat button | Done |
 | **Sales & demand** admin tool: today / this week / this month / last 6 months / this year, compared with the period before | Done |
 | **Buying guides** (`/{store}/guides`): articles with product cards and "top picks" rows, contents box, Article data for Google | Done |
+| **Content studio** (free, no AI or paid API): blog posts, Web Stories, newsletter drafts, social and WhatsApp posts, posters, banners and Pinterest pins from product data; optional automatic content when a product is published | Done |
 | **Installable app** (PWA): "Install the app" / Add to Home screen, offline page | Done |
 | **Google Analytics 4 and Meta Pixel**, loaded only after the shopper accepts cookies | Done |
 | **CSV bulk import** of affiliate products (check first, then import as drafts) | Done |
@@ -132,6 +133,20 @@ launch, or set `DEMO_CATALOG=false` in `.env` to stop reseeding missing ones. Th
 them unless you set `DEMO_CATALOG=true` explicitly.
 
 ## 4. First-time setup in each admin panel
+
+Every admin panel has a **Website instructions** page (last item in the menu, visible to all staff) that explains
+every feature in simple numbered steps, with a search box. Keep it in step with this README when features change.
+
+The admin menu is grouped by selling channel:
+
+- **Elaashop (`/shop/admin`)**: 1 · Affiliate products, 2 · Dropshipping products, 3 · E-commerce products
+  (own stock), then shared Catalog & marketing and Store & team groups.
+- **Elaatech (`/digital/admin`)**: 1 · Affiliate products, 2 · My own products (digital products you upload and
+  sell), then the same shared groups.
+
+Each channel page lists only that channel's products (`GET /products?method=…`) and creates new products with the
+channel's selling method preset. The order pages filter with `GET /orders?method=DIRECT|DROPSHIP|AFFILIATE`, which
+matches orders containing at least one line of that method; "All products" and "All orders" remain unfiltered.
 
 1. Sign in with the bootstrap admin and choose a new password.
 2. **Settings → Store & invoice details**: store name, support email, seller legal name, GSTIN, registered
@@ -248,6 +263,27 @@ published, can be previewed as drafts, and appear on `/{store}/guides`, on the h
 pages they mention ("Featured in our guides") and in `sitemap.xml`. Changing the address of a published guide adds a
 301 redirect automatically.
 
+## Content studio
+
+Admin → **Content studio**. Everything is written from fixed templates and drawn on your own server: there is no AI
+model, no paid API and no per-use cost. The text comes only from the product's live page (summary, highlights, pros
+and cons, verdict, rating, specifications, price and partner store), so it never invents facts; sections without data
+are left out. Fill in those fields for richer content. **Another version** rewords everything.
+
+- **One product**: four blog posts (review, "is it worth it?", FAQs, how to choose) saved as a draft or published in
+  Buying guides; a Google Web Story using the product's photos; a launch newsletter; captions for Instagram,
+  Facebook, Pinterest, LinkedIn, X, WhatsApp and Telegram (copy, or open the network's free share window); and posters
+  in six sizes (Instagram post / portrait, story / status, Pinterest pin, social banner, website banner) in light,
+  dark or sale style, as PNG downloads.
+- **Several products** (2-10): a comparison (2-4), a "best of" roundup (3+), new-arrivals / top-deals / collection
+  newsletters, and sale or collection banners with your own headline.
+- **Automation**: when a product is published for the first time, create a blog post and a Web Story (draft or
+  published) and a launch newsletter. Newsletters are always saved as **drafts**: review and send them from
+  Customers → Campaigns. Everything made is listed under **History**.
+- Products must be published (content links to their live page). Stories and posters need a JPEG or PNG photo
+  (WebP photos are skipped on posters). Posters use the bundled Noto Sans font (SIL Open Font License), so they look the
+  same on any server. Creating newsletters needs the "send marketing" permission; everything else needs catalog access.
+
 ## Installable app, analytics and cookie consent
 
 - Both storefronts can be installed like an app ("Install the app" in the footer and phone menu, or the browser's
@@ -285,7 +321,26 @@ Up to 500 products per file; products already in the catalog (same title) are sk
 `PAYMENT_PROVIDER=demo` (the default) shows a clearly labelled demo payment screen with "Simulate successful
 payment" / "Simulate failed payment" buttons. It runs through the same server-side flow a real provider will use:
 payment events, amount checks, stock commit, invoice and digital delivery. **The demo provider refuses to start
-when the `prod` profile is active**, so it cannot accidentally go live. Razorpay will replace it.
+when the `prod` profile is active**, so it cannot accidentally go live.
+
+### Razorpay
+
+1. Razorpay Dashboard → **Account & Settings → API Keys**: generate a key. Start with **Test mode** (`rzp_test_...`).
+2. **Webhooks → Add new webhook**: URL `https://your-domain/api/payments/webhooks/razorpay`, a secret you choose, and
+   the events `payment.authorized`, `payment.captured`, `payment.failed` and `order.paid`. Razorpay must be able to
+   reach the URL, so webhooks only work on a public domain (or through a tunnel such as ngrok while testing).
+3. In `.env`: `PAYMENT_PROVIDER=razorpay`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`.
+   The app refuses to start if any of them is missing.
+4. Place a test order and pay with one of Razorpay's test cards or UPI IDs, then try a refund from the admin order page.
+   When everything works, switch to the live key and live webhook.
+
+How it works: placing an order creates a Razorpay order for the exact total. The payment page opens Razorpay Checkout
+(loaded from Razorpay only on that page; every other page keeps the strict Content-Security-Policy). When the shopper
+pays, the server checks Razorpay's signature, reads the payment back from Razorpay's API, captures it if it is only
+authorized, and checks the amount before the order is marked paid. The signed webhook does the same, so the order
+is completed even if the shopper closes the browser; whichever arrives second is ignored. Refunds (full or partial)
+from the admin order page are sent to Razorpay. A payment that arrives after the stock hold expired is still recorded:
+the order is re-reserved or flagged **Needs attention** for a refund.
 
 ## Tests
 
@@ -306,7 +361,11 @@ saved-cart reminders sent once, campaigns that reach subscribers only, results, 
 pages and store comparison, automations (link checker against a fake partner site, Telegram posts, welcome / digest /
 review-request emails, daily summary), reviews (approval queue, staff-added reviews labelled with their source,
 permissions), product videos (content checks, poster, limits, VideoObject markup) and Web Stories (publishing rules,
-AMP page, previews, sitemap, renamed links, one-click stories from products, permissions). No MySQL is needed for
+AMP page, previews, sitemap, renamed links, one-click stories from products, permissions) and Razorpay against a fake
+Razorpay API (forged confirmations rejected, capture of authorized payments, signed webhooks, duplicates ignored,
+failure and retry, refunds, payment-page CSP) and the content studio (template text never prints missing data, social
+posts fit each network, poster sizes, guides / stories / newsletter drafts created, automatic content on publish,
+permissions). No MySQL is needed for
 tests. The jar is written to `backend/target/hybrid-platform.jar`.
 
 **CI:** `.github/workflows/ci.yml` runs the tests and a JavaScript syntax check on every push and pull request, and
@@ -334,7 +393,7 @@ docker compose up --build
 
 Starts MySQL 8 and the app. Uses `.env` for credentials (also set `MYSQL_ROOT_PASSWORD`). Data persists in the
 `mysql-data` and `app-data` volumes. The container runs with the `docker` profile; switch to `prod` (secure cookies,
-strict startup checks) once Razorpay is configured.
+strict startup checks) once Razorpay is configured (`PAYMENT_PROVIDER=razorpay`).
 
 ## Security analyzer
 
@@ -353,7 +412,7 @@ session rotation on sign-in, JDBC sessions, encrypted secrets. With `COOKIE_SECU
 - Run with `SPRING_PROFILES_ACTIVE=prod` (requires `APP_ENCRYPTION_KEY` and `APP_HASH_SALT`)
 - Enable MFA on every staff account (especially Master Admin); open **Security** until the score is Strong
 - Set `REQUIRE_EMAIL_VERIFICATION=true` once SMTP works; set `DEMO_CATALOG=false` and delete demo products
-- Configure a real payment provider (Razorpay, pending)
+- Set `PAYMENT_PROVIDER=razorpay` with **live** keys and the live webhook (see **Payments → Razorpay**)
 - Schedule `scripts/backup.ps1` / `backup.sh` daily (MySQL + `STORAGE_ROOT`) and copy backups off the server
 - Configure SMTP in each admin panel and fill in the legal pages
 - Check **System health** and **Security** in each admin after deploying
@@ -371,7 +430,8 @@ docs/        Architecture notes and decision records
 
 ## Known limitations
 
-- Razorpay is not integrated yet (demo payments only).
+- Razorpay is the only real payment gateway. Payments that need Razorpay's dashboard (disputes, settlements) are
+  handled there, not in the admin.
 - Uploaded files are type- and size-checked but not malware-scanned.
 - Affiliate sales arrive by CSV import or the generic postback URL; network-specific reporting APIs are not built.
 - Rate limits and uploaded files live on the single server. Before running more than one app server, move rate limits

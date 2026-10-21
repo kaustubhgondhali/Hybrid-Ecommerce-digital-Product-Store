@@ -24,8 +24,12 @@ import org.springframework.security.web.context.HttpSessionSecurityContextReposi
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfFilter;
 import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
+import org.springframework.security.web.header.writers.DelegatingRequestMatcherHeaderWriter;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import org.springframework.security.web.header.writers.StaticHeadersWriter;
+import org.springframework.security.web.util.matcher.NegatedRequestMatcher;
+import org.springframework.security.web.util.matcher.RegexRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 
 import java.io.IOException;
 import java.util.LinkedHashMap;
@@ -57,6 +61,19 @@ public class SecurityConfig {
             .replace("connect-src 'self'", "connect-src 'self' https://*.google-analytics.com https://*.analytics.google.com "
                     + "https://*.googletagmanager.com https://www.facebook.com https://connect.facebook.net");
 
+    /**
+     * The payment page with Razorpay active: checkout.js loads from several Razorpay subdomains (some chosen at
+     * runtime), opens its own iframe and injects its styles.
+     */
+    private static final String RAZORPAY_PAY_CSP = STORE_CSP
+            .replace("img-src 'self' data: blob:", "img-src 'self' data: blob: https://*.razorpay.com")
+            .replace("style-src 'self'", "style-src 'self' 'unsafe-inline'")
+            .replace("script-src 'self'", "script-src 'self' https://*.razorpay.com")
+            .replace("connect-src 'self'", "connect-src 'self' https://*.razorpay.com")
+            .replace("object-src 'none'", "frame-src 'self' https://*.razorpay.com; object-src 'none'");
+
+    private static final RequestMatcher PAY_PAGE = new RegexRequestMatcher("^/(shop|digital)/pay/[^/?]+([?].*)?$", "GET");
+
     /** Deny powerful browser features this store never needs. */
     private static final String PERMISSIONS_POLICY =
             "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), "
@@ -65,12 +82,15 @@ public class SecurityConfig {
     private final ObjectMapper objectMapper;
     private final AdminUserRepository adminUsers;
     private final boolean cookieSecure;
+    private final boolean razorpay;
 
     public SecurityConfig(ObjectMapper objectMapper, AdminUserRepository adminUsers,
-                          @Value("${server.servlet.session.cookie.secure:false}") boolean cookieSecure) {
+                          @Value("${server.servlet.session.cookie.secure:false}") boolean cookieSecure,
+                          @Value("${app.payment.provider:demo}") String paymentProvider) {
         this.objectMapper = objectMapper;
         this.adminUsers = adminUsers;
         this.cookieSecure = cookieSecure;
+        this.razorpay = "razorpay".equalsIgnoreCase(paymentProvider.trim());
     }
 
     @Bean
@@ -124,16 +144,17 @@ public class SecurityConfig {
     @Bean
     @Order(4)
     public SecurityFilterChain webChain(HttpSecurity http) throws Exception {
-        common(http, SessionAuth.CUSTOMER_KEY, STORE_CSP);
+        common(http, SessionAuth.CUSTOMER_KEY, STORE_CSP, razorpay ? RAZORPAY_PAY_CSP : null);
         http.authorizeHttpRequests(a -> a.anyRequest().permitAll());
         return http.build();
     }
 
     private void common(HttpSecurity http, String contextKey) throws Exception {
-        common(http, contextKey, CSP);
+        common(http, contextKey, CSP, null);
     }
 
-    private void common(HttpSecurity http, String contextKey, String policy) throws Exception {
+    /** {@code payPagePolicy}, when set, replaces {@code policy} on the payment page only. */
+    private void common(HttpSecurity http, String contextKey, String policy, String payPagePolicy) throws Exception {
         HttpSessionSecurityContextRepository repo = new HttpSessionSecurityContextRepository();
         repo.setSpringSecurityContextKey(contextKey);
         CookieCsrfTokenRepository csrfRepo = CookieCsrfTokenRepository.withHttpOnlyFalse();
@@ -151,13 +172,24 @@ public class SecurityConfig {
                 .logout(AbstractHttpConfigurer::disable)
                 .exceptionHandling(e -> e.authenticationEntryPoint(jsonEntryPoint()).accessDeniedHandler(jsonDenied()))
                 .headers(h -> {
-                    h.contentSecurityPolicy(csp -> csp.policyDirectives(cookieSecure
-                                    ? policy
-                                    : policy.replace("; upgrade-insecure-requests", "")))
-                            .frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
+                    if (payPagePolicy == null) {
+                        h.contentSecurityPolicy(csp -> csp.policyDirectives(finish(policy)))
+                                .addHeaderWriter(new StaticHeadersWriter("Permissions-Policy", PERMISSIONS_POLICY));
+                    } else {
+                        RequestMatcher otherPages = new NegatedRequestMatcher(PAY_PAGE);
+                        h.addHeaderWriter(new DelegatingRequestMatcherHeaderWriter(otherPages,
+                                        new StaticHeadersWriter("Content-Security-Policy", finish(policy))))
+                                .addHeaderWriter(new DelegatingRequestMatcherHeaderWriter(PAY_PAGE,
+                                        new StaticHeadersWriter("Content-Security-Policy", finish(payPagePolicy))))
+                                .addHeaderWriter(new DelegatingRequestMatcherHeaderWriter(otherPages,
+                                        new StaticHeadersWriter("Permissions-Policy", PERMISSIONS_POLICY)))
+                                .addHeaderWriter(new DelegatingRequestMatcherHeaderWriter(PAY_PAGE,
+                                        new StaticHeadersWriter("Permissions-Policy", PERMISSIONS_POLICY.replace(
+                                                "payment=()", "payment=(self \"https://api.razorpay.com\")"))));
+                    }
+                    h.frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
                             .referrerPolicy(r -> r.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
-                            .contentTypeOptions(Customizer.withDefaults())
-                            .addHeaderWriter(new StaticHeadersWriter("Permissions-Policy", PERMISSIONS_POLICY));
+                            .contentTypeOptions(Customizer.withDefaults());
                     // HSTS only when cookies are Secure — otherwise local HTTP development breaks for a year.
                     if (cookieSecure) {
                         h.httpStrictTransportSecurity(hsts -> hsts.includeSubDomains(true).maxAgeInSeconds(31_536_000));
@@ -165,6 +197,10 @@ public class SecurityConfig {
                         h.httpStrictTransportSecurity(HeadersConfigurer.HstsConfig::disable);
                     }
                 });
+    }
+
+    private String finish(String policy) {
+        return cookieSecure ? policy : policy.replace("; upgrade-insecure-requests", "");
     }
 
     private AuthenticationEntryPoint jsonEntryPoint() {
